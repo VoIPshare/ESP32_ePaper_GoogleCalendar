@@ -1,0 +1,39 @@
+function doGet(e) {
+  const cal = CalendarApp.getDefaultCalendar();
+  const now = new Date();
+
+  const next24h = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+  console.log( now );
+  console.log( next24h );
+  const upcoming = cal.getEvents(now, next24h);
+
+  const next24hEvents = upcoming.map(ev => ({
+    title: ev.getTitle(),
+    start: ev.getStartTime().toISOString(),
+    end: ev.getEndTime().toISOString(),
+    allDay: ev.isAllDayEvent()
+  }));
+
+  const year = now.getFullYear();
+  const month = now.getMonth();
+  const todayStart = new Date(year, month, now.getDate());
+  const monthEnd = new Date(year, month + 1, 1);
+
+  const monthEvents = cal.getEvents(todayStart, monthEnd);
+  const daysSet = new Set();
+
+  monthEvents.forEach(ev => {
+    const d = ev.getStartTime().getDate();
+    if (d >= now.getDate()) daysSet.add(d);
+  });
+
+  const payload = {
+    next24hEvents,
+    daysWithEvents: [...daysSet].sort((a, b) => a - b)
+  };
+
+  return ContentService
+    .createTextOutput(JSON.stringify(payload))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
