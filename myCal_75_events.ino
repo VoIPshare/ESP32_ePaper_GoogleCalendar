@@ -49,20 +49,6 @@ const char* password = SECRET_PASS;
 #define SLEEP_1H (3600ULL * uS_TO_S_FACTOR)
 #define SLEEP_2H (7200ULL * uS_TO_S_FACTOR)
 
-struct CalendarEvent {
-  String title;
-  String start;
-  String end;
-  bool allDay;
-};
-
-struct DayForecast {
-  float minTemp =  999;
-  float maxTemp = -999;
-  String icon;
-  bool valid = false;
-};
-
 const char* versionURL  = URL_VERSION;
 const char* firmwareURL = URL_FW;
 
@@ -284,6 +270,11 @@ String formatEventDateTimeEST(const String &iso, bool includeEnd=false, const St
 void drawCalendar()
 {
   struct tm timeinfo;
+
+  int16_t tbx, tby;
+  uint16_t tbw, tbh;
+  String txt;
+
   while(!getLocalTime(&timeinfo)) {
     Serial.println("Waiting for time...");
     delay(500);
@@ -361,8 +352,22 @@ void drawCalendar()
       display.setTextColor(GxEPD_BLACK);
     }
 
-    display.setCursor(x, yy);
-    display.print(d);
+  txt = String(d);
+
+  // Get text bounds
+  display.getTextBounds(txt, 0, 0, &tbx, &tby, &tbw, &tbh);
+
+  // Circle center
+  int cx = x + 16;
+  int cy = yy - 12;
+
+  // Compute centered cursor position
+  int tx = cx - (tbw / 2);
+  int ty = cy + (tbh / 2);  // baseline correction
+
+  display.setCursor(tx, ty);
+  display.print(txt);
+
 
     col++;
     if (col > 6) {
