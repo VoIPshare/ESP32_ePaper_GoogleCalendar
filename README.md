@@ -6,6 +6,8 @@ I didn’t include the fonts due to potential copyright issues. You can choose y
 fontconvert Geologica-Bold.ttf 14 32 255 > Geologica_Bold14pt8b.h
 ```
 
+You should rename or copy my_secrets.h.rename to my_secrets.h
+
 > **Note:** The character range has been modified to include accented characters.
 
 ## 3D Print Notes
