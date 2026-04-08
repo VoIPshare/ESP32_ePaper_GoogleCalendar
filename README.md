@@ -35,7 +35,7 @@ Required fields in the setup page:
 
 Optional fields:
 
-- enable daily GitHub Releases update checks
+- enable GitHub Releases update checks every 12 hours
 - OTA version URL
 - OTA firmware URL
 
@@ -68,7 +68,8 @@ Example OTA URLs:
 - `https://github.com/<owner>/<repo>/releases/latest/download/ESP32_ePaper_GoogleCalendar-esp32c6.bin`
 
 You can paste those URLs directly into the setup page so the device can check GitHub Releases for updates.
-If the daily update checkbox is enabled, the device will check GitHub Releases at most once per calendar day when it wakes up.
+If the GitHub update checkbox is enabled, the device will check for updates at most once every 12 hours after the previous successful version check.
+The OTA URL fields are intentionally manual so forks and custom firmware builds do not accidentally update from the upstream project.
 
 ## Weather Provider
 
@@ -81,7 +82,7 @@ Why this is a better fit here:
 - easier sharing and flashing for other people
 - daily forecast data matches an e-paper dashboard well
 
-The device geocodes the configured city and country code through Open-Meteo, then loads a 2-day daily forecast for min temperature, max temperature, and weather code.
+The device geocodes the configured city and country code through Open-Meteo, then loads a 3-day daily forecast for min temperature, max temperature, and weather code.
 
 ## Fonts
 
