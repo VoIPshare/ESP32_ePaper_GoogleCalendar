@@ -979,7 +979,7 @@ bool fetchCalendarData(
 
 void drawForecast(int x, int y, uint16_t color) {
     DayForecast today, tomorrow, dayAfterTomorrow;
-    const char* labels[] = {"Today", "Tomorrow", "+2"};
+    // const char* labels[] = {"Today", "Tomorrow", "+2"};
     DayForecast* forecasts[] = {&today, &tomorrow, &dayAfterTomorrow};
     const int blockWidth = 180;
 
@@ -995,8 +995,8 @@ void drawForecast(int x, int y, uint16_t color) {
 
     for (int i = 0; i < 3; ++i) {
         int blockX = x + (i * blockWidth);
-        display.setCursor(blockX, y + 12);
-        display.print(labels[i]);
+        // display.setCursor(blockX, y + 12);
+        // display.print(labels[i]);
 
         if (forecasts[i]->valid) {
             drawIcon(
