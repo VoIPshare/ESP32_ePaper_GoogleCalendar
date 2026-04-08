@@ -11,6 +11,7 @@ struct DeviceConfig {
   String otaVersionUrl;
   String otaFirmwareUrl;
   String boardProfile;
+  bool otaEnabled;
   int sleepHours;
   int epdCs;
   int epdDc;
@@ -47,6 +48,7 @@ void applyBoardProfile(const String&, bool);
 bool isKnownBoardProfile(const String&);
 void initDisplayHardware();
 uint64_t sleepDurationUs();
+bool shouldCheckForOTA();
 void startConfigPortal();
 void drawConfigNeededScreen(const char* apName, const IPAddress& ip);
 String buildConfigPage();

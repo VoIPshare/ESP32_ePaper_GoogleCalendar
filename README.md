@@ -10,7 +10,7 @@ This project runs on an ESP32 and shows:
 ## Setup
 
 1. Deploy the Apps Script from `google_script_read_cal.txt` to your Google account.
-2. Build and flash `myCal_75_events.ino` to the board.
+2. Build and flash `ESP32_ePaper_GoogleCalendar.ino` to the board.
 3. On first boot, connect to the Wi-Fi network `myCal-Setup`.
 4. Open `http://192.168.4.1`.
 5. Choose a hardware profile, then review or edit the pins if needed.
@@ -35,6 +35,7 @@ Required fields in the setup page:
 
 Optional fields:
 
+- enable daily GitHub Releases update checks
 - OTA version URL
 - OTA firmware URL
 
@@ -62,11 +63,12 @@ The GitHub workflow builds `esp32` and `esp32c6` firmware and publishes stable r
 Example OTA URLs:
 
 - `https://github.com/<owner>/<repo>/releases/latest/download/version-esp32.txt`
-- `https://github.com/<owner>/<repo>/releases/latest/download/myCal_75_events-esp32.bin`
+- `https://github.com/<owner>/<repo>/releases/latest/download/ESP32_ePaper_GoogleCalendar-esp32.bin`
 - `https://github.com/<owner>/<repo>/releases/latest/download/version-esp32c6.txt`
-- `https://github.com/<owner>/<repo>/releases/latest/download/myCal_75_events-esp32c6.bin`
+- `https://github.com/<owner>/<repo>/releases/latest/download/ESP32_ePaper_GoogleCalendar-esp32c6.bin`
 
 You can paste those URLs directly into the setup page so the device can check GitHub Releases for updates.
+If the daily update checkbox is enabled, the device will check GitHub Releases at most once per calendar day when it wakes up.
 
 ## Weather Provider
 
