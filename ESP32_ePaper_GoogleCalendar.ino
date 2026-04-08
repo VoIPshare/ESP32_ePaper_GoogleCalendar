@@ -59,7 +59,7 @@ DeviceConfig config;
 bool hasStoredConfig = false;
 WebServer server(80);
 Preferences preferences;
-RTC_DATA_ATTR uint32_t lastOtaCheckDay = 0;
+RTC_DATA_ATTR uint32_t lastOtaCheckEpoch = 0;
 
 // ===================
 // SCREEN LAYOUT
@@ -101,21 +101,6 @@ void setup()
         daysCount,
         events,
         eventCount)) {
-
-    // Serial.println("Days with events:");
-    // for (int i = 0; i < daysCount; i++) {
-    //   Serial.println(daysWithEvents[i]);
-    // }
-
-    // Serial.println("\nNext 24h events:");
-    // for (int i = 0; i < eventCount; i++) {
-    //   Serial.printf(
-    //     "- %s (%s → %s)\n",
-    //     events[i].title.c_str(),
-    //     events[i].start.c_str(),
-    //     events[i].end.c_str()
-    //   );
-    }
   }
 
   drawUI();
@@ -276,16 +261,12 @@ bool shouldCheckForOTA()
   if (!config.otaEnabled) return false;
   if (!timeSynced) return false;
 
-  time_t now = time(nullptr);
-  struct tm localNow;
-  localtime_r(&now, &localNow);
-  uint32_t currentDay = (uint32_t)(localNow.tm_year + 1900) * 1000U + (uint32_t)localNow.tm_yday;
-
-  if (lastOtaCheckDay == currentDay) {
+  uint32_t now = (uint32_t)time(nullptr);
+  if (lastOtaCheckEpoch != 0 && now >= lastOtaCheckEpoch &&
+      (now - lastOtaCheckEpoch) < (12UL * 3600UL)) {
     return false;
   }
 
-  lastOtaCheckDay = currentDay;
   return true;
 }
 
@@ -312,6 +293,27 @@ String htmlEscape(const String& input)
     else if (c == '"') out += F("&quot;");
     else if (c == '\'') out += F("&#39;");
     else out += c;
+  }
+  return out;
+}
+
+String urlEncode(const String& input)
+{
+  String out;
+  out.reserve(input.length() * 3);
+  for (size_t i = 0; i < input.length(); ++i) {
+    uint8_t c = input[i];
+    if ((c >= 'a' && c <= 'z') ||
+        (c >= 'A' && c <= 'Z') ||
+        (c >= '0' && c <= '9') ||
+        c == '-' || c == '_' || c == '.' || c == '~') {
+      out += char(c);
+      continue;
+    }
+
+    char encoded[4];
+    snprintf(encoded, sizeof(encoded), "%%%02X", c);
+    out += encoded;
   }
   return out;
 }
@@ -498,7 +500,7 @@ function applyProfile() {
   html += R"rawliteral(">
 <label><input type="checkbox" name="ota_enabled" )rawliteral";
   html += config.otaEnabled ? "checked" : "";
-  html += R"rawliteral(> Check GitHub updates once a day</label>
+  html += R"rawliteral(> Check GitHub updates every 12 hours</label>
 <label for="ota_ver">OTA version URL</label>
 <input id="ota_ver" name="ota_ver" value=")rawliteral";
   html += htmlEscape(config.otaVersionUrl);
@@ -1090,10 +1092,12 @@ bool fetchForecast(DayForecast& today, DayForecast& tomorrow, DayForecast& dayAf
 
 bool fetchCoordinates(float& latitude, float& longitude) {
     String city = config.city;
-    city.replace(" ", "%20");
+    city.trim();
+    city = urlEncode(city);
 
     String country = config.country;
     country.trim();
+    country = urlEncode(country);
 
     char url[384];
     snprintf(
@@ -1190,6 +1194,7 @@ void checkForOTA() {
   String newVersion = http.getString();
   newVersion.trim();
   http.end();
+  lastOtaCheckEpoch = (uint32_t)time(nullptr);
 
   if ( compareVersions(newVersion, FW_VERSION) == 0 ) {
     Serial.println("Firmware is up to date");
