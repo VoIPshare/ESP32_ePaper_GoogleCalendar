@@ -31,13 +31,12 @@
 // ===================
 const char* AP_NAME = "myCal-Setup";
 const char* OTA_REPO_BASE = "https://github.com/VoIPshare/ESP32_ePaper_GoogleCalendar/releases/latest/download";
+const char* DEFAULT_DEVICE_TZ = "EST5EDT,M3.2.0/2,M11.1.0/2";
 
 #ifndef FW_VERSION
 #define FW_VERSION "0.1.1"
 #endif
 #define uS_TO_S_FACTOR 1000000ULL
-
-const char* DEVICE_TZ   = "EST5EDT,M3.2.0/2,M11.1.0/2";
 
 // ===================
 // DISPLAY (RAM-SAFE BUFFER)
@@ -169,6 +168,7 @@ void loadConfig()
   config.wifiPass = preferences.getString("wifi_pass", "");
   config.city = preferences.getString("city", "");
   config.country = preferences.getString("country", "");
+  config.timezone = preferences.getString("timezone", DEFAULT_DEVICE_TZ);
   config.googleScriptId = preferences.getString("google_id", "");
   config.otaVersionUrl = preferences.getString("ota_ver", "");
   config.otaFirmwareUrl = preferences.getString("ota_fw", "");
@@ -190,6 +190,9 @@ void loadConfig()
   if (config.sleepHours != 6 && config.sleepHours != 12 &&
       config.sleepHours != 18 && config.sleepHours != 24) {
     config.sleepHours = 12;
+  }
+  if (!config.timezone.length()) {
+    config.timezone = DEFAULT_DEVICE_TZ;
   }
 }
 
@@ -515,6 +518,11 @@ function applyProfile() {
 <input id="country" name="country" value=")rawliteral";
   html += htmlEscape(config.country);
   html += R"rawliteral(">
+<label for="timezone">Timezone (POSIX TZ string)</label>
+<input id="timezone" name="timezone" value=")rawliteral";
+  html += htmlEscape(config.timezone);
+  html += R"rawliteral(">
+<div class="note">Example: EST5EDT,M3.2.0/2,M11.1.0/2</div>
 <label><input type="checkbox" name="ota_enabled" )rawliteral";
   html += config.otaEnabled ? "checked" : "";
   html += R"rawliteral(> Check GitHub updates every 12 hours from VoIPshare/ESP32_ePaper_GoogleCalendar</label>
@@ -543,6 +551,7 @@ void handleConfigSave()
   config.googleScriptId = server.arg("google_id");
   config.city = server.arg("city");
   config.country = server.arg("country");
+  config.timezone = server.arg("timezone");
   config.otaEnabled = server.hasArg("ota_enabled");
   config.epdCs = server.arg("epd_cs").toInt();
   config.epdDc = server.arg("epd_dc").toInt();
@@ -556,6 +565,9 @@ void handleConfigSave()
   if (config.boardProfile != "custom") {
     applyBoardProfile(config.boardProfile, true);
   }
+  if (!config.timezone.length()) {
+    config.timezone = DEFAULT_DEVICE_TZ;
+  }
 
   config.otaVersionUrl = defaultOtaVersionUrl();
   config.otaFirmwareUrl = defaultOtaFirmwareUrl();
@@ -568,6 +580,7 @@ void handleConfigSave()
   preferences.putString("google_id", config.googleScriptId);
   preferences.putString("city", config.city);
   preferences.putString("country", config.country);
+  preferences.putString("timezone", config.timezone);
   preferences.putBool("ota_enabled", config.otaEnabled);
   preferences.putString("ota_ver", config.otaVersionUrl);
   preferences.putString("ota_fw", config.otaFirmwareUrl);
@@ -640,7 +653,7 @@ void startConfigPortal()
 void initTime()
 {
   configTime(0, 0, "pool.ntp.org", "time.nist.gov");
-  setTimezoneEST();
+  setConfiguredTimezone();
 
   struct tm timeinfo;
   timeSynced = getLocalTime(&timeinfo, 10000);
@@ -683,9 +696,8 @@ const int CAL_H = BODY_H; // use full body height
 const int CAL_X = 0;     // start at left
 const int CAL_Y = TOP_H;
 
-void setTimezoneEST() {
-  // Eastern Time with daylight saving
-  setenv("TZ", DEVICE_TZ, 1);
+void setConfiguredTimezone() {
+  setenv("TZ", config.timezone.length() ? config.timezone.c_str() : DEFAULT_DEVICE_TZ, 1);
   tzset();
 }
 
@@ -736,7 +748,7 @@ bool parseIsoUtc(const String& iso, time_t& outEpoch) {
   return outEpoch != (time_t)-1;
 }
 
-String formatEventDateTimeEST(const String &iso, bool includeEnd=false, const String &endIso="") {
+String formatEventDateTimeLocal(const String &iso, bool includeEnd=false, const String &endIso="") {
   time_t startEpoch;
   if (!parseIsoUtc(iso, startEpoch)) {
     return includeEnd ? String("--:--") : String("-- --:--");
@@ -908,7 +920,7 @@ void drawCalendar()
     for (int i = 0; i < eventCount && i < 5; i++) {
       String when = events[i].allDay
         ? String("All day")
-        : formatEventDateTimeEST(events[i].start, true, events[i].end);
+        : formatEventDateTimeLocal(events[i].start, true, events[i].end);
 
       String line = utf8ToLatin1(when + " " + events[i].title);
       listY = drawWrappedText(
@@ -1462,7 +1474,7 @@ void drawStatus()
   display.print( buf );
 
   struct tm t;
-  setTimezoneEST();
+  setConfiguredTimezone();
   if (getLocalTime(&t)) {
         Serial.println("Time");
         snprintf(buf, sizeof(buf),

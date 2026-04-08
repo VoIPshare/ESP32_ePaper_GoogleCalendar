@@ -15,7 +15,7 @@ This project runs on an ESP32 and shows:
 4. Open `http://192.168.4.1`.
 5. Choose a hardware profile, then review or edit the pins if needed.
 6. Choose the refresh interval for deep sleep wake-up.
-7. Enter your Wi-Fi, Open-Meteo location, and Google Script ID.
+7. Enter your Wi-Fi, Open-Meteo location, timezone, and Google Script ID.
 8. Save the form and let the device reboot.
 
 Google Apps Script: [https://script.google.com/home/](https://script.google.com/home/)
@@ -31,6 +31,7 @@ Required fields in the setup page:
 - hardware profile and display pins
 - city
 - country code
+- timezone as a POSIX TZ string, for example `EST5EDT,M3.2.0/2,M11.1.0/2`
 - Google Apps Script ID
 
 Optional fields:
