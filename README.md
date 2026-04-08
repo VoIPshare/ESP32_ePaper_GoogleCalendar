@@ -4,7 +4,7 @@ This project runs on an ESP32 and shows:
 
 - a month view with highlighted calendar days that contain events
 - the next 24 hours of Google Calendar events
-- a short OpenWeather forecast
+- a short Open-Meteo forecast
 - battery voltage and firmware version
 
 ## Setup
