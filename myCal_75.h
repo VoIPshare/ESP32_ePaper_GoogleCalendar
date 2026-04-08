@@ -1,14 +1,66 @@
 // ===================
 // FUNCTIONS
 // ===================
+
+struct DeviceConfig {
+  String wifiSsid;
+  String wifiPass;
+  String weatherApiKey;
+  String city;
+  String country;
+  String googleScriptId;
+  String otaVersionUrl;
+  String otaFirmwareUrl;
+  String boardProfile;
+  int sleepHours;
+  int epdCs;
+  int epdDc;
+  int epdRst;
+  int epdBusy;
+  int epdSck;
+  int epdMosi;
+  int pinDisplayPower;
+  int batPin;
+};
+
+struct CalendarEvent {
+  String title;
+  String start;
+  String end;
+  bool allDay;
+};
+
+struct DayForecast {
+  float minTemp =  999;
+  float maxTemp = -999;
+  String icon;
+  bool valid = false;
+};
+
 void connectWiFi();
 void initTime();
 void drawUI();
 void drawTopBar();
 void drawCalendar();
+void loadConfig();
+bool isConfigComplete();
+void applyBoardProfile(const String&, bool);
+bool isKnownBoardProfile(const String&);
+void initDisplayHardware();
+uint64_t sleepDurationUs();
+void startConfigPortal();
+void drawConfigNeededScreen(const char* apName, const IPAddress& ip);
+String buildConfigPage();
+String buildBoardProfileOptions();
+String buildSleepOptions();
+void handleConfigRoot();
+void handleConfigSave();
 void setTimezoneEST();
+bool parseIsoUtc(const String&, time_t&);
+String formatEventDateTimeEST(const String&, bool, const String&);
 
 int dayIndex(time_t) ;
+int dayIndexWithOffset(time_t, int);
 void extractTodayTomorrow(JsonDocument& ,DayForecast& , DayForecast& ,int );
 bool fetchForecast(DayForecast& tday, DayForecast& );
 int compareVersions(const String& , const String& );
