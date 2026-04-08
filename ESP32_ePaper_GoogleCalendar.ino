@@ -296,7 +296,8 @@ String htmlEscape(const String& input)
 String buildSsidOptions()
 {
   String options;
-  int networkCount = WiFi.scanNetworks();
+  WiFi.scanDelete();
+  int networkCount = WiFi.scanNetworks(false, true);
   for (int i = 0; i < networkCount && i < 24; ++i) {
     String ssid = WiFi.SSID(i);
     if (!ssid.length()) {
@@ -409,7 +410,6 @@ function applyProfile() {
 <div class="card">
 <h1>myCal Setup</h1>
 <p>Configure WiFi, weather, calendar, and optional OTA links for this display.</p>
-<div class="note">Connect to this device and open <strong>http://192.168.4.1</strong>.</div>
 <form action="/save" method="POST">
 <label for="wifi_ssid">WiFi network</label>
 <select id="wifi_ssid" name="wifi_ssid">
@@ -418,6 +418,7 @@ function applyProfile() {
   html += buildSsidOptions();
   html += R"rawliteral(
 </select>
+<button type="button" onclick="location.reload()">Rescan WiFi</button>
 <label for="wifi_pass">WiFi password</label>
 <input id="wifi_pass" name="wifi_pass" value=")rawliteral";
   html += htmlEscape(config.wifiPass);
@@ -572,7 +573,8 @@ void drawConfigNeededScreen(const char* apName, const IPAddress& ip)
 void startConfigPortal()
 {
   Serial.println("Starting configuration portal");
-  WiFi.mode(WIFI_AP);
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.disconnect(false, true);
   bool started = WiFi.softAP(AP_NAME);
   Serial.println(started ? "AP started" : "AP failed");
 
@@ -949,6 +951,9 @@ bool fetchCalendarData(
 
 void drawForecast(int x, int y, uint16_t color) {
     DayForecast today, tomorrow, dayAfterTomorrow;
+    const char* labels[] = {"Today", "Tomorrow", "+2 days"};
+    DayForecast* forecasts[] = {&today, &tomorrow, &dayAfterTomorrow};
+    const int blockWidth = 180;
 
     display.setFont(&Geologica_Bold14pt8b);
 
@@ -959,57 +964,29 @@ void drawForecast(int x, int y, uint16_t color) {
         display.setTextColor(GxEPD_BLACK);
         return;
     }
-    
-    // TODAY
-    if (today.valid) {
-        drawIcon(
-            x, y,
-            48, 48,
-            getWeatherIconFromOW(today.icon),
-            getWeatherIconColor(today.icon)
-        );
 
-        String tempText = utf8ToLatin1(String((int)today.minTemp) + "° / " + String((int)today.maxTemp) + "°");
-        display.setCursor(x + 55, y + 32);
-        display.print(tempText);
-    } else {
-        display.setCursor(x, y + 32);
-        display.print("No forecast");
-    }
-    
-    // TOMORROW 
-    x += 180;
-    if (tomorrow.valid) {
-        drawIcon(
-            x, y,
-            48, 48,
-            getWeatherIconFromOW(tomorrow.icon),
-            getWeatherIconColor(tomorrow.icon)
-        );
+    for (int i = 0; i < 3; ++i) {
+        int blockX = x + (i * blockWidth);
+        display.setCursor(blockX, y + 12);
+        display.print(labels[i]);
 
-        String tempText = utf8ToLatin1(String((int)tomorrow.minTemp) + "° / " + String((int)tomorrow.maxTemp) + "°");
-        display.setCursor(x + 55, y + 32);
-        display.print(tempText);
-    } else {
-        display.setCursor(x, y + 32);
-        display.print("No forecast");
-    }
+        if (forecasts[i]->valid) {
+            drawIcon(
+                blockX, y + 20,
+                48, 48,
+                getWeatherIconFromOW(forecasts[i]->icon),
+                getWeatherIconColor(forecasts[i]->icon)
+            );
 
-    x += 180;
-    if (dayAfterTomorrow.valid) {
-        drawIcon(
-            x, y,
-            48, 48,
-            getWeatherIconFromOW(dayAfterTomorrow.icon),
-            getWeatherIconColor(dayAfterTomorrow.icon)
-        );
-
-        String tempText = utf8ToLatin1(String((int)dayAfterTomorrow.minTemp) + "° / " + String((int)dayAfterTomorrow.maxTemp) + "°");
-        display.setCursor(x + 55, y + 32);
-        display.print(tempText);
-    } else {
-        display.setCursor(x, y + 32);
-        display.print("No forecast");
+            String tempText = utf8ToLatin1(
+                String((int)forecasts[i]->minTemp) + "° / " + String((int)forecasts[i]->maxTemp) + "°"
+            );
+            display.setCursor(blockX + 55, y + 52);
+            display.print(tempText);
+        } else {
+            display.setCursor(blockX, y + 52);
+            display.print("No forecast");
+        }
     }
 }
 
