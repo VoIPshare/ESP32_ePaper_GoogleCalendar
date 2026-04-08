@@ -59,6 +59,7 @@ DeviceConfig config;
 bool hasStoredConfig = false;
 WebServer server(80);
 Preferences preferences;
+RTC_DATA_ATTR uint32_t lastOtaCheckDay = 0;
 
 // ===================
 // SCREEN LAYOUT
@@ -87,6 +88,9 @@ void setup()
 
   connectWiFi();
   initTime();
+  if (shouldCheckForOTA()) {
+    checkForOTA();
+  }
 
   char calendarURL[256];
   snprintf(calendarURL, sizeof(calendarURL), "https://script.google.com/macros/s/%s/exec", config.googleScriptId.c_str());
@@ -183,6 +187,7 @@ void loadConfig()
   config.otaVersionUrl = preferences.getString("ota_ver", "");
   config.otaFirmwareUrl = preferences.getString("ota_fw", "");
   config.boardProfile = preferences.getString("board_profile", "esp32-waveshare");
+  config.otaEnabled = preferences.getBool("ota_enabled", false);
   config.sleepHours = preferences.getInt("sleep_hours", 12);
   config.epdCs = preferences.getInt("epd_cs", -1);
   config.epdDc = preferences.getInt("epd_dc", -1);
@@ -264,6 +269,24 @@ void initDisplayHardware()
 uint64_t sleepDurationUs()
 {
   return (uint64_t)config.sleepHours * 3600ULL * uS_TO_S_FACTOR;
+}
+
+bool shouldCheckForOTA()
+{
+  if (!config.otaEnabled) return false;
+  if (!timeSynced) return false;
+
+  time_t now = time(nullptr);
+  struct tm localNow;
+  localtime_r(&now, &localNow);
+  uint32_t currentDay = (uint32_t)(localNow.tm_year + 1900) * 1000U + (uint32_t)localNow.tm_yday;
+
+  if (lastOtaCheckDay == currentDay) {
+    return false;
+  }
+
+  lastOtaCheckDay = currentDay;
+  return true;
 }
 
 bool isConfigComplete()
@@ -473,6 +496,9 @@ function applyProfile() {
 <input id="country" name="country" value=")rawliteral";
   html += htmlEscape(config.country);
   html += R"rawliteral(">
+<label><input type="checkbox" name="ota_enabled" )rawliteral";
+  html += config.otaEnabled ? "checked" : "";
+  html += R"rawliteral(> Check GitHub updates once a day</label>
 <label for="ota_ver">OTA version URL</label>
 <input id="ota_ver" name="ota_ver" value=")rawliteral";
   html += htmlEscape(config.otaVersionUrl);
@@ -506,6 +532,7 @@ void handleConfigSave()
   config.googleScriptId = server.arg("google_id");
   config.city = server.arg("city");
   config.country = server.arg("country");
+  config.otaEnabled = server.hasArg("ota_enabled");
   config.otaVersionUrl = server.arg("ota_ver");
   config.otaFirmwareUrl = server.arg("ota_fw");
   config.epdCs = server.arg("epd_cs").toInt();
@@ -529,6 +556,7 @@ void handleConfigSave()
   preferences.putString("google_id", config.googleScriptId);
   preferences.putString("city", config.city);
   preferences.putString("country", config.country);
+  preferences.putBool("ota_enabled", config.otaEnabled);
   preferences.putString("ota_ver", config.otaVersionUrl);
   preferences.putString("ota_fw", config.otaFirmwareUrl);
   preferences.putInt("epd_cs", config.epdCs);
@@ -951,7 +979,7 @@ bool fetchCalendarData(
 
 void drawForecast(int x, int y, uint16_t color) {
     DayForecast today, tomorrow, dayAfterTomorrow;
-    const char* labels[] = {"Today", "Tomorrow", "+2 days"};
+    const char* labels[] = {"Today", "Tomorrow", "+2"};
     DayForecast* forecasts[] = {&today, &tomorrow, &dayAfterTomorrow};
     const int blockWidth = 180;
 

@@ -79,7 +79,7 @@ jobs:
             --build-property 'compiler.cpp.extra_flags=-DFW_VERSION=\"'"$VERSION"'\"' \
             --export-binaries \
             --output-dir "${{ matrix.build-dir }}" \
-            ./myCal_75_events.ino
+            ./ESP32_ePaper_GoogleCalendar.ino
 
       - name: Package firmware
         env:
@@ -92,7 +92,7 @@ jobs:
           FIRMWARE="$(find release/${{ matrix.name }} -name '*.ino.bin' | head -n 1)"
           if [ -n "$BOOTLOADER" ]; then mv "$BOOTLOADER" "release/${{ matrix.name }}/bootloader-${{ matrix.name }}.bin"; fi
           if [ -n "$PARTITIONS" ]; then mv "$PARTITIONS" "release/${{ matrix.name }}/partitions-${{ matrix.name }}.bin"; fi
-          if [ -n "$FIRMWARE" ]; then mv "$FIRMWARE" "release/${{ matrix.name }}/myCal_75_events-${{ matrix.name }}.bin"; fi
+          if [ -n "$FIRMWARE" ]; then mv "$FIRMWARE" "release/${{ matrix.name }}/ESP32_ePaper_GoogleCalendar-${{ matrix.name }}.bin"; fi
           printf "%s\n" "$VERSION" > "release/${{ matrix.name }}/version-${{ matrix.name }}.txt"
 
       - name: Upload build artifact
@@ -123,5 +123,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: firmware-${{ github.event.inputs.version }}
-          name: myCal firmware ${{ github.event.inputs.version }}
+          name: ESP32 ePaper Google Calendar ${{ github.event.inputs.version }}
           files: publish/*
