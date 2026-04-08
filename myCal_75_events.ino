@@ -5,6 +5,8 @@
 #include <HTTPClient.h>
 #include <HTTPUpdate.h>
 #include <ArduinoJson.h>
+#include <WebServer.h>
+#include <Preferences.h>
 
 #include <GxEPD2_4C.h>
 #include <epd4c/GxEPD2_750c_GDEM075F52.h>
@@ -22,40 +24,26 @@
 #include "icons/icon_rainandthunder.h"
 #include "icons/icon_snow.h"
 
-#include "my_secrets.h"
 #include "myCal_75.h"
 
 // ===================
 // WIFI CONFIG
 // ===================
-const char* ssid     = SECRET_SSID;
-const char* password = SECRET_PASS;
+const char* AP_NAME = "myCal-Setup";
 
-// ===================
-// E-PAPER PINS
-// ===================
-
-#define EPD_CS    15
-#define EPD_DC    27
-#define EPD_RST   26
-#define EPD_BUSY  25
-#define EPD_SCK   13
-#define EPD_MOSI  14
-#define PIN_IO4   4  // display power enable
-#define BAT_PIN   35
-
+#ifndef FW_VERSION
 #define FW_VERSION "0.1.1"
+#endif
 #define uS_TO_S_FACTOR 1000000ULL
-#define SLEEP_1H (3600ULL * uS_TO_S_FACTOR)
-#define SLEEP_2H (7200ULL * uS_TO_S_FACTOR)
 
-const char* versionURL  = URL_VERSION;
-const char* firmwareURL = URL_FW;
+const char* DEVICE_TZ   = "EST5EDT,M3.2.0/2,M11.1.0/2";
 
 // ===================
 // DISPLAY (RAM-SAFE BUFFER)
 // ===================
-GxEPD2_4C< GxEPD2_750c_GDEM075F52, GxEPD2_750c_GDEM075F52::HEIGHT/2> display( GxEPD2_750c_GDEM075F52(EPD_CS, EPD_DC, EPD_RST, EPD_BUSY) );
+using DisplayType = GxEPD2_4C<GxEPD2_750c_GDEM075F52, GxEPD2_750c_GDEM075F52::HEIGHT / 2>;
+DisplayType* displayHandle = nullptr;
+#define display (*displayHandle)
 
 
 #define MAX_DAYS   31
@@ -66,6 +54,11 @@ int daysCount = 0;
 
 CalendarEvent events[MAX_EVENTS];
 int eventCount = 0;
+bool timeSynced = false;
+DeviceConfig config;
+bool hasStoredConfig = false;
+WebServer server(80);
+Preferences preferences;
 
 // ===================
 // SCREEN LAYOUT
@@ -84,20 +77,19 @@ void setup()
 {
   Serial.begin(115200);
 
-  // Power on display
-  pinMode(PIN_IO4, OUTPUT);
-  digitalWrite(PIN_IO4, HIGH);
+  loadConfig();
+  initDisplayHardware();
 
-  SPI.begin(EPD_SCK, -1, EPD_MOSI, EPD_CS);
-
-  display.init(115200, true, 2, false);
-  display.setRotation(0);
+  if (!isConfigComplete()) {
+    startConfigPortal();
+    return;
+  }
 
   connectWiFi();
   initTime();
 
   char calendarURL[256];
-  snprintf(calendarURL, sizeof(calendarURL), "https://script.google.com/macros/s/%s/exec", GOOGLE_SCRIPT_ID);
+  snprintf(calendarURL, sizeof(calendarURL), "https://script.google.com/macros/s/%s/exec", config.googleScriptId.c_str());
 
   if (fetchCalendarData(
         calendarURL,
@@ -130,9 +122,11 @@ void setup()
 
   display.hibernate();
 
-  digitalWrite(PIN_IO4, LOW);
+  if (config.pinDisplayPower >= 0) {
+  digitalWrite(config.pinDisplayPower, LOW);
+  }
   Serial.println("Going to sleep. Bye");
-  esp_sleep_enable_timer_wakeup( SLEEP_2H );
+  esp_sleep_enable_timer_wakeup(sleepDurationUs());
   esp_deep_sleep_start();
 
 }
@@ -144,7 +138,8 @@ void loop() {}
 // ===================
 void connectWiFi()
 {
-  WiFi.begin(ssid, password);
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(config.wifiSsid.c_str(), config.wifiPass.c_str());
   Serial.print("Connecting WiFi");
 
   int attempts = 0;
@@ -159,7 +154,7 @@ void connectWiFi()
       Serial.println("WiFi failed");
 
       // Wake up after xxx seconds
-      esp_sleep_enable_timer_wakeup(SLEEP_2H);  //30ULL * 1000000ULL);
+      esp_sleep_enable_timer_wakeup(sleepDurationUs());  //30ULL * 1000000ULL);
                                             //   esp_sleep_enable_timer_wakeup( sleep_us ); //30ULL * 1000000ULL);
       Serial.flush();
       esp_deep_sleep_start();
@@ -168,14 +163,455 @@ void connectWiFi()
   Serial.println(" OK");
 }
 
+void loadConfig()
+{
+  preferences.begin("config", true);
+
+  hasStoredConfig =
+    preferences.isKey("wifi_ssid") ||
+    preferences.isKey("wifi_pass") ||
+    preferences.isKey("weather_key") ||
+    preferences.isKey("city") ||
+    preferences.isKey("country") ||
+    preferences.isKey("google_id") ||
+    preferences.isKey("board_profile");
+
+  config.wifiSsid = preferences.getString("wifi_ssid", "");
+  config.wifiPass = preferences.getString("wifi_pass", "");
+  config.weatherApiKey = preferences.getString("weather_key", "");
+  config.city = preferences.getString("city", "");
+  config.country = preferences.getString("country", "");
+  config.googleScriptId = preferences.getString("google_id", "");
+  config.otaVersionUrl = preferences.getString("ota_ver", "");
+  config.otaFirmwareUrl = preferences.getString("ota_fw", "");
+  config.boardProfile = preferences.getString("board_profile", "esp32-waveshare");
+  config.sleepHours = preferences.getInt("sleep_hours", 12);
+  config.epdCs = preferences.getInt("epd_cs", -1);
+  config.epdDc = preferences.getInt("epd_dc", -1);
+  config.epdRst = preferences.getInt("epd_rst", -1);
+  config.epdBusy = preferences.getInt("epd_busy", -1);
+  config.epdSck = preferences.getInt("epd_sck", -1);
+  config.epdMosi = preferences.getInt("epd_mosi", -1);
+  config.pinDisplayPower = preferences.getInt("disp_pwr", -1);
+  config.batPin = preferences.getInt("bat_pin", -1);
+
+  preferences.end();
+
+  applyBoardProfile(config.boardProfile, !hasStoredConfig || config.epdCs < 0);
+  if (config.sleepHours != 6 && config.sleepHours != 12 &&
+      config.sleepHours != 18 && config.sleepHours != 24) {
+    config.sleepHours = 12;
+  }
+}
+
+bool isKnownBoardProfile(const String& profile)
+{
+  return profile == "esp32" || profile == "esp32c6" || profile == "esp32-waveshare" || profile == "custom";
+}
+
+void applyBoardProfile(const String& requestedProfile, bool overwritePins)
+{
+  String profile = isKnownBoardProfile(requestedProfile) ? requestedProfile : String("esp32-waveshare");
+  config.boardProfile = profile;
+
+  if (!overwritePins && profile == "custom") {
+    return;
+  }
+
+  if (profile == "esp32c6") {
+    config.epdCs = 1;
+    config.epdDc = 8;
+    config.epdRst = 14;
+    config.epdBusy = 7;
+    config.epdSck = 23;
+    config.epdMosi = 22;
+    config.pinDisplayPower = 4;
+    config.batPin = 0;
+    return;
+  }
+
+  // The dashboard project uses the same preset for esp32 and Waveshare.
+  config.epdCs = 15;
+  config.epdDc = 27;
+  config.epdRst = 26;
+  config.epdBusy = 25;
+  config.epdSck = 13;
+  config.epdMosi = 14;
+  config.pinDisplayPower = 4;
+  config.batPin = 35;
+}
+
+void initDisplayHardware()
+{
+  if (config.pinDisplayPower >= 0) {
+    pinMode(config.pinDisplayPower, OUTPUT);
+    digitalWrite(config.pinDisplayPower, HIGH);
+  }
+
+  SPI.begin(config.epdSck, -1, config.epdMosi, config.epdCs);
+
+  if (displayHandle) {
+    delete displayHandle;
+    displayHandle = nullptr;
+  }
+
+  displayHandle = new DisplayType(
+    GxEPD2_750c_GDEM075F52(config.epdCs, config.epdDc, config.epdRst, config.epdBusy)
+  );
+
+  display.init(115200, true, 2, false);
+  display.setRotation(0);
+}
+
+uint64_t sleepDurationUs()
+{
+  return (uint64_t)config.sleepHours * 3600ULL * uS_TO_S_FACTOR;
+}
+
+bool isConfigComplete()
+{
+  return
+    hasStoredConfig &&
+    config.wifiSsid.length() &&
+    config.wifiPass.length() &&
+    config.weatherApiKey.length() &&
+    config.city.length() &&
+    config.country.length() &&
+    config.googleScriptId.length();
+}
+
+String htmlEscape(const String& input)
+{
+  String out;
+  out.reserve(input.length() + 16);
+  for (size_t i = 0; i < input.length(); ++i) {
+    char c = input[i];
+    if (c == '&') out += F("&amp;");
+    else if (c == '<') out += F("&lt;");
+    else if (c == '>') out += F("&gt;");
+    else if (c == '"') out += F("&quot;");
+    else if (c == '\'') out += F("&#39;");
+    else out += c;
+  }
+  return out;
+}
+
+String buildSsidOptions()
+{
+  String options;
+  int networkCount = WiFi.scanNetworks();
+  for (int i = 0; i < networkCount && i < 24; ++i) {
+    String ssid = WiFi.SSID(i);
+    if (!ssid.length()) {
+      continue;
+    }
+
+    options += "<option value=\"";
+    options += htmlEscape(ssid);
+    options += "\"";
+    if (ssid == config.wifiSsid) {
+      options += " selected";
+    }
+    options += ">";
+    options += htmlEscape(ssid);
+    options += "</option>";
+  }
+  if (!options.length()) {
+    options = "<option value=\"\">No WiFi networks found</option>";
+  }
+  return options;
+}
+
+String buildBoardProfileOptions()
+{
+  struct ProfileOption {
+    const char* value;
+    const char* label;
+  };
+
+  const ProfileOption profiles[] = {
+    {"esp32-waveshare", "ESP32 Waveshare"},
+    {"esp32", "ESP32"},
+    {"esp32c6", "ESP32-C6"},
+    {"custom", "Custom"}
+  };
+
+  String options;
+  for (const auto& profile : profiles) {
+    options += "<option value=\"";
+    options += profile.value;
+    options += "\"";
+    if (config.boardProfile == profile.value) {
+      options += " selected";
+    }
+    options += ">";
+    options += profile.label;
+    options += "</option>";
+  }
+  return options;
+}
+
+String buildSleepOptions()
+{
+  const int values[] = {6, 12, 18, 24};
+  String options;
+  for (int value : values) {
+    options += "<option value=\"";
+    options += String(value);
+    options += "\"";
+    if (config.sleepHours == value) {
+      options += " selected";
+    }
+    options += ">";
+    options += String(value);
+    options += " hours</option>";
+  }
+  return options;
+}
+
+String buildConfigPage()
+{
+  String html = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>myCal Setup</title>
+<style>
+body{font-family:Arial,Helvetica,sans-serif;background:#f5f1e8;margin:0;color:#222}
+.wrap{max-width:560px;margin:24px auto;padding:20px}
+.card{background:#fff;border:2px solid #222;border-radius:16px;padding:22px;box-shadow:8px 8px 0 #f0d84c}
+h1{margin:0 0 8px;font-size:28px}
+p{line-height:1.45}
+label{display:block;font-weight:bold;margin:14px 0 6px}
+input,select{width:100%;padding:12px;border:1px solid #999;border-radius:10px;box-sizing:border-box}
+button{width:100%;padding:14px;margin-top:18px;border:0;border-radius:12px;background:#222;color:#fff;font-size:16px;font-weight:bold}
+.note{background:#fff8d8;padding:10px 12px;border-radius:10px;margin:12px 0}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+</style>
+<script>
+const profiles = {
+  "esp32-waveshare": {epd_cs:15,epd_dc:27,epd_rst:26,epd_busy:25,epd_sck:13,epd_mosi:14,disp_pwr:4,bat_pin:35},
+  "esp32": {epd_cs:15,epd_dc:27,epd_rst:26,epd_busy:25,epd_sck:13,epd_mosi:14,disp_pwr:4,bat_pin:35},
+  "esp32c6": {epd_cs:1,epd_dc:8,epd_rst:14,epd_busy:7,epd_sck:23,epd_mosi:22,disp_pwr:4,bat_pin:0}
+};
+function applyProfile() {
+  const sel = document.getElementById("board_profile").value;
+  if (!profiles[sel]) return;
+  const pins = profiles[sel];
+  Object.keys(pins).forEach((id) => {
+    const field = document.getElementById(id);
+    if (field) field.value = pins[id];
+  });
+}
+</script>
+</head>
+<body>
+<div class="wrap">
+<div class="card">
+<h1>myCal Setup</h1>
+<p>Configure WiFi, weather, calendar, and optional OTA links for this display.</p>
+<div class="note">Connect to this device and open <strong>http://192.168.4.1</strong>.</div>
+<form action="/save" method="POST">
+<label for="wifi_ssid">WiFi network</label>
+<select id="wifi_ssid" name="wifi_ssid">
+)rawliteral";
+
+  html += buildSsidOptions();
+  html += R"rawliteral(
+</select>
+<label for="wifi_pass">WiFi password</label>
+<input id="wifi_pass" name="wifi_pass" value=")rawliteral";
+  html += htmlEscape(config.wifiPass);
+  html += R"rawliteral(">
+<label for="sleep_hours">Refresh interval</label>
+<select id="sleep_hours" name="sleep_hours">
+)rawliteral";
+  html += buildSleepOptions();
+  html += R"rawliteral(
+</select>
+<label for="board_profile">Hardware profile</label>
+<select id="board_profile" name="board_profile" onchange="applyProfile()">
+)rawliteral";
+  html += buildBoardProfileOptions();
+  html += R"rawliteral(
+</select>
+<div class="grid">
+<div><label for="epd_cs">EPD CS</label><input id="epd_cs" name="epd_cs" type="number" value=")rawliteral";
+  html += String(config.epdCs);
+  html += R"rawliteral("></div>
+<div><label for="epd_dc">EPD DC</label><input id="epd_dc" name="epd_dc" type="number" value=")rawliteral";
+  html += String(config.epdDc);
+  html += R"rawliteral("></div>
+<div><label for="epd_rst">EPD RST</label><input id="epd_rst" name="epd_rst" type="number" value=")rawliteral";
+  html += String(config.epdRst);
+  html += R"rawliteral("></div>
+<div><label for="epd_busy">EPD BUSY</label><input id="epd_busy" name="epd_busy" type="number" value=")rawliteral";
+  html += String(config.epdBusy);
+  html += R"rawliteral("></div>
+<div><label for="epd_sck">EPD SCK</label><input id="epd_sck" name="epd_sck" type="number" value=")rawliteral";
+  html += String(config.epdSck);
+  html += R"rawliteral("></div>
+<div><label for="epd_mosi">EPD MOSI</label><input id="epd_mosi" name="epd_mosi" type="number" value=")rawliteral";
+  html += String(config.epdMosi);
+  html += R"rawliteral("></div>
+<div><label for="disp_pwr">Display power</label><input id="disp_pwr" name="disp_pwr" type="number" value=")rawliteral";
+  html += String(config.pinDisplayPower);
+  html += R"rawliteral("></div>
+<div><label for="bat_pin">Battery ADC</label><input id="bat_pin" name="bat_pin" type="number" value=")rawliteral";
+  html += String(config.batPin);
+  html += R"rawliteral("></div>
+</div>
+<label for="google_id">Google Script ID</label>
+<input id="google_id" name="google_id" value=")rawliteral";
+  html += htmlEscape(config.googleScriptId);
+  html += R"rawliteral(">
+<label for="weather_key">OpenWeather API key</label>
+<input id="weather_key" name="weather_key" value=")rawliteral";
+  html += htmlEscape(config.weatherApiKey);
+  html += R"rawliteral(">
+<label for="city">City</label>
+<input id="city" name="city" value=")rawliteral";
+  html += htmlEscape(config.city);
+  html += R"rawliteral(">
+<label for="country">Country code</label>
+<input id="country" name="country" value=")rawliteral";
+  html += htmlEscape(config.country);
+  html += R"rawliteral(">
+<label for="ota_ver">OTA version URL</label>
+<input id="ota_ver" name="ota_ver" value=")rawliteral";
+  html += htmlEscape(config.otaVersionUrl);
+  html += R"rawliteral(">
+<label for="ota_fw">OTA firmware URL</label>
+<input id="ota_fw" name="ota_fw" value=")rawliteral";
+  html += htmlEscape(config.otaFirmwareUrl);
+  html += R"rawliteral(">
+<button type="submit">Save configuration</button>
+</form>
+</div>
+</div>
+</body>
+</html>
+)rawliteral";
+
+  return html;
+}
+
+void handleConfigRoot()
+{
+  server.send(200, "text/html", buildConfigPage());
+}
+
+void handleConfigSave()
+{
+  config.wifiSsid = server.arg("wifi_ssid");
+  config.wifiPass = server.arg("wifi_pass");
+  config.sleepHours = server.arg("sleep_hours").toInt();
+  config.boardProfile = server.arg("board_profile");
+  config.googleScriptId = server.arg("google_id");
+  config.weatherApiKey = server.arg("weather_key");
+  config.city = server.arg("city");
+  config.country = server.arg("country");
+  config.otaVersionUrl = server.arg("ota_ver");
+  config.otaFirmwareUrl = server.arg("ota_fw");
+  config.epdCs = server.arg("epd_cs").toInt();
+  config.epdDc = server.arg("epd_dc").toInt();
+  config.epdRst = server.arg("epd_rst").toInt();
+  config.epdBusy = server.arg("epd_busy").toInt();
+  config.epdSck = server.arg("epd_sck").toInt();
+  config.epdMosi = server.arg("epd_mosi").toInt();
+  config.pinDisplayPower = server.arg("disp_pwr").toInt();
+  config.batPin = server.arg("bat_pin").toInt();
+
+  if (config.boardProfile != "custom") {
+    applyBoardProfile(config.boardProfile, true);
+  }
+
+  preferences.begin("config", false);
+  preferences.putString("wifi_ssid", config.wifiSsid);
+  preferences.putString("wifi_pass", config.wifiPass);
+  preferences.putInt("sleep_hours", config.sleepHours);
+  preferences.putString("board_profile", config.boardProfile);
+  preferences.putString("google_id", config.googleScriptId);
+  preferences.putString("weather_key", config.weatherApiKey);
+  preferences.putString("city", config.city);
+  preferences.putString("country", config.country);
+  preferences.putString("ota_ver", config.otaVersionUrl);
+  preferences.putString("ota_fw", config.otaFirmwareUrl);
+  preferences.putInt("epd_cs", config.epdCs);
+  preferences.putInt("epd_dc", config.epdDc);
+  preferences.putInt("epd_rst", config.epdRst);
+  preferences.putInt("epd_busy", config.epdBusy);
+  preferences.putInt("epd_sck", config.epdSck);
+  preferences.putInt("epd_mosi", config.epdMosi);
+  preferences.putInt("disp_pwr", config.pinDisplayPower);
+  preferences.putInt("bat_pin", config.batPin);
+  preferences.end();
+
+  server.send(200, "text/html",
+    "<!DOCTYPE html><html><head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+    "<title>Saved</title></head><body style=\"font-family:Arial,Helvetica,sans-serif;display:flex;justify-content:center;align-items:center;height:100vh\">"
+    "<div><h2>Configuration saved</h2><p>Restarting the device...</p></div></body></html>");
+  delay(1200);
+  ESP.restart();
+}
+
+void drawConfigNeededScreen(const char* apName, const IPAddress& ip)
+{
+  display.setFullWindow();
+  display.firstPage();
+  do {
+    display.fillScreen(GxEPD_WHITE);
+    drawTopBar();
+    display.setTextColor(GxEPD_BLACK);
+    display.setFont(&Geologica_Bold14pt8b);
+    drawCenteredText(0, 90, SCREEN_W, 40, "Configuration required", &Geologica_Bold14pt8b, GxEPD_RED);
+    drawCenteredText(0, 150, SCREEN_W, 40, "Connect to WiFi:", &Geologica_Bold14pt8b, GxEPD_BLACK);
+    drawCenteredText(0, 190, SCREEN_W, 40, apName, &Geologica_Bold14pt8b, GxEPD_BLACK);
+    drawCenteredText(0, 250, SCREEN_W, 40, "Open in your browser:", &Geologica_Bold14pt8b, GxEPD_BLACK);
+
+    char ipBuf[32];
+    snprintf(ipBuf, sizeof(ipBuf), "http://%s", ip.toString().c_str());
+    drawCenteredText(0, 290, SCREEN_W, 40, ipBuf, &Geologica_Bold14pt8b, GxEPD_RED);
+    drawCenteredText(0, 360, SCREEN_W, 40, "Save the form to start the dashboard.", &Geologica_Bold14pt8b, GxEPD_BLACK);
+  } while (display.nextPage());
+}
+
+void startConfigPortal()
+{
+  Serial.println("Starting configuration portal");
+  WiFi.mode(WIFI_AP);
+  bool started = WiFi.softAP(AP_NAME);
+  Serial.println(started ? "AP started" : "AP failed");
+
+  IPAddress ip = WiFi.softAPIP();
+  Serial.print("AP IP: ");
+  Serial.println(ip);
+
+  server.on("/", handleConfigRoot);
+  server.on("/save", HTTP_POST, handleConfigSave);
+  server.begin();
+
+  drawConfigNeededScreen(AP_NAME, ip);
+
+  while (true) {
+    server.handleClient();
+    delay(10);
+  }
+}
+
 // ===================
 // TIME (NTP)
 // ===================
 void initTime()
 {
   configTime(0, 0, "pool.ntp.org", "time.nist.gov");
-  delay(2000);
   setTimezoneEST();
+
+  struct tm timeinfo;
+  timeSynced = getLocalTime(&timeinfo, 10000);
+  Serial.println(timeSynced ? "Time synced" : "Time sync failed");
 }
 
 // ===================
@@ -216,7 +652,7 @@ const int CAL_Y = TOP_H;
 
 void setTimezoneEST() {
   // Eastern Time with daylight saving
-  setenv("TZ", "EST5EDT,M3.2.0,M11.1.0", 1);
+  setenv("TZ", DEVICE_TZ, 1);
   tzset();
 }
 
@@ -228,40 +664,82 @@ bool hasEventOnDay(int day) {
   return false;
 }
 
+bool parseIsoUtc(const String& iso, time_t& outEpoch) {
+  int year, month, day, hour, minute, second;
+  second = 0;
+
+  int matched = sscanf(
+    iso.c_str(),
+    "%d-%d-%dT%d:%d:%d",
+    &year, &month, &day, &hour, &minute, &second
+  );
+
+  if (matched < 5) {
+    return false;
+  }
+
+  struct tm tmUtc = {};
+  tmUtc.tm_year = year - 1900;
+  tmUtc.tm_mon = month - 1;
+  tmUtc.tm_mday = day;
+  tmUtc.tm_hour = hour;
+  tmUtc.tm_min = minute;
+  tmUtc.tm_sec = second;
+
+  char* previousTz = getenv("TZ");
+  String previousTzValue = previousTz ? String(previousTz) : String("");
+
+  setenv("TZ", "UTC0", 1);
+  tzset();
+  outEpoch = mktime(&tmUtc);
+
+  if (previousTzValue.length()) {
+    setenv("TZ", previousTzValue.c_str(), 1);
+  } else {
+    unsetenv("TZ");
+  }
+  tzset();
+
+  return outEpoch != (time_t)-1;
+}
+
 String formatEventDateTimeEST(const String &iso, bool includeEnd=false, const String &endIso="") {
-  int y, mo, d, h, mi;
-  sscanf(iso.c_str(), "%d-%d-%dT%d:%d", &y, &mo, &d, &h, &mi);
+  time_t startEpoch;
+  if (!parseIsoUtc(iso, startEpoch)) {
+    return includeEnd ? String("--:--") : String("-- --:--");
+  }
 
-  // ------------------------
-  // Determine EST/EDT offset
-  // ------------------------
-  int offset = -5; // EST base
-  bool isDST = false;
-
-  // Simple DST rule (approximation): 2nd Sunday March → 1st Sunday Nov
-  if (mo > 3 && mo < 11) isDST = true;        // Apr–Oct
-  if (mo == 3 && d >= 8) isDST = true;        // March 2nd Sunday onward
-  if (mo == 11 && d < 8) isDST = true;        // Nov 1st Sunday before end
-  if (isDST) offset = -4;
-
-  // Apply offset
-  h += offset;
-  if (h < 0) { h += 24; d -= 1; }
-  if (h >= 24) { h -= 24; d += 1; }
+  struct tm startLocal;
+  localtime_r(&startEpoch, &startLocal);
 
   char buf[32];
   if (!includeEnd) {
-    snprintf(buf, sizeof(buf), "%02d %02d:%02d", d, h, mi);
+    snprintf(
+      buf,
+      sizeof(buf),
+      "%02d %02d:%02d",
+      startLocal.tm_mday,
+      startLocal.tm_hour,
+      startLocal.tm_min
+    );
   } else {
-    // parse end time
-    int y2, mo2, d2, h2, mi2;
-    sscanf(endIso.c_str(), "%d-%d-%dT%d:%d", &y2, &mo2, &d2, &h2, &mi2);
-    // apply offset to end time
-    h2 += offset;
-    if (h2 < 0) { h2 += 24; d2 -= 1; }
-    if (h2 >= 24) { h2 -= 24; d2 += 1; }
+    time_t endEpoch;
+    if (!parseIsoUtc(endIso, endEpoch)) {
+      snprintf(buf, sizeof(buf), "%02d:%02d", startLocal.tm_hour, startLocal.tm_min);
+      return String(buf);
+    }
 
-    snprintf(buf, sizeof(buf), "%02d:%02d-%02d:%02d", h, mi, h2, mi2);
+    struct tm endLocal;
+    localtime_r(&endEpoch, &endLocal);
+    snprintf(
+      buf,
+      sizeof(buf),
+      "%02d:%02d-%02d:%02d",
+      startLocal.tm_hour,
+      startLocal.tm_min,
+      endLocal.tm_hour,
+      endLocal.tm_min
+    );
   }
 
   return String(buf);
@@ -275,9 +753,13 @@ void drawCalendar()
   uint16_t tbw, tbh;
   String txt;
 
-  while(!getLocalTime(&timeinfo)) {
-    Serial.println("Waiting for time...");
-    delay(500);
+  if (!getLocalTime(&timeinfo, 1000)) {
+    display.setFont(&Geologica_Bold14pt8b);
+    display.setTextColor(GxEPD_RED);
+    display.setCursor(CAL_X + 20, CAL_Y + 60);
+    display.print("Time unavailable");
+    display.setTextColor(GxEPD_BLACK);
+    return;
   }
 
   int year  = timeinfo.tm_year + 1900;
@@ -386,19 +868,26 @@ void drawCalendar()
   display.setTextColor(GxEPD_BLACK);
   display.setFont(&Geologica_Bold14pt8b);
 
-  for (int i = 0; i < eventCount && i < 5; i++) {
-    String when = formatEventDateTimeEST(events[i].start, true, events[i].end);
+  if (eventCount == 0) {
+    display.setCursor(listX, listY);
+    display.print("No events in the next 24h");
+  } else {
+    for (int i = 0; i < eventCount && i < 5; i++) {
+      String when = events[i].allDay
+        ? String("All day")
+        : formatEventDateTimeEST(events[i].start, true, events[i].end);
 
-    String line = utf8ToLatin1(when + " " + events[i].title);
-    listY = drawWrappedText(
-      listX,
-      listY,
-      maxWidth,
-      line,
-      lineHeight
-    );
+      String line = utf8ToLatin1(when + " " + events[i].title);
+      listY = drawWrappedText(
+        listX,
+        listY,
+        maxWidth,
+        line,
+        lineHeight
+      );
 
-    listY+=lineHeight/2;
+      listY += lineHeight / 2;
+    }
   }
 }
 
@@ -443,6 +932,9 @@ bool fetchCalendarData(
   daysCount = 0;
   JsonArray days = doc["daysWithEvents"];
   for (int d : days) {
+    if (daysCount >= MAX_DAYS) {
+      break;
+    }
     daysWithEvents[daysCount++] = d;
   }
 
@@ -452,6 +944,9 @@ bool fetchCalendarData(
   eventCount = 0;
   JsonArray evts = doc["next24hEvents"];
   for (JsonObject e : evts) {
+    if (eventCount >= MAX_EVENTS) {
+      break;
+    }
     events[eventCount].title = e["title"].as<String>();
     events[eventCount].start = e["start"].as<String>();
     events[eventCount].end   = e["end"].as<String>();
@@ -464,36 +959,50 @@ bool fetchCalendarData(
 void drawForecast(int x, int y, uint16_t color) {
     DayForecast today, tomorrow;
 
-    if (!fetchForecast(today, tomorrow)) return;
-    
-    // TODAY
-    drawIcon(
-        x, y,
-        48, 48,
-        getWeatherIconFromOW(today.icon),
-        getWeatherIconColor(today.icon)
-    );
-
     display.setFont(&Geologica_Bold14pt8b);
 
-    String tempText =  utf8ToLatin1(String((int)today.minTemp) + "° / " + String((int)today.maxTemp) + "°");
+    if (!fetchForecast(today, tomorrow)) {
+        display.setTextColor(GxEPD_RED);
+        display.setCursor(x, y + 32);
+        display.print("Weather unavailable");
+        display.setTextColor(GxEPD_BLACK);
+        return;
+    }
+    
+    // TODAY
+    if (today.valid) {
+        drawIcon(
+            x, y,
+            48, 48,
+            getWeatherIconFromOW(today.icon),
+            getWeatherIconColor(today.icon)
+        );
 
-    display.setCursor(x+55, y+32);
-    display.print(tempText);
+        String tempText = utf8ToLatin1(String((int)today.minTemp) + "° / " + String((int)today.maxTemp) + "°");
+        display.setCursor(x + 55, y + 32);
+        display.print(tempText);
+    } else {
+        display.setCursor(x, y + 32);
+        display.print("No forecast");
+    }
     
     // TOMORROW 
-    x+=200;
-    drawIcon(
-        x, y,
-        48, 48,
-        getWeatherIconFromOW(tomorrow.icon),
-        getWeatherIconColor(tomorrow.icon)
-    );
+    x += 200;
+    if (tomorrow.valid) {
+        drawIcon(
+            x, y,
+            48, 48,
+            getWeatherIconFromOW(tomorrow.icon),
+            getWeatherIconColor(tomorrow.icon)
+        );
 
-    tempText =  utf8ToLatin1(String((int)tomorrow.minTemp) + "° / " + String((int)tomorrow.maxTemp) + "°");
-
-    display.setCursor(x+55, y+32);
-    display.print(tempText);
+        String tempText = utf8ToLatin1(String((int)tomorrow.minTemp) + "° / " + String((int)tomorrow.maxTemp) + "°");
+        display.setCursor(x + 55, y + 32);
+        display.print(tempText);
+    } else {
+        display.setCursor(x, y + 32);
+        display.print("No forecast");
+    }
 }
 
 
@@ -501,7 +1010,10 @@ bool fetchForecast(DayForecast& today, DayForecast& tomorrow) {
     bool status=false;
     char forecastURL[256];
     snprintf(forecastURL, sizeof(forecastURL),
-         "https://api.openweathermap.org/data/2.5/forecast?q=%s,%s&units=metric&cnt=16&appid=%s", CITY, COUNTRY, APIKEY);
+         "https://api.openweathermap.org/data/2.5/forecast?q=%s,%s&units=metric&cnt=16&appid=%s",
+         config.city.c_str(),
+         config.country.c_str(),
+         config.weatherApiKey.c_str());
 
     WiFiClientSecure client;
     client.setInsecure(); // for testing only
@@ -513,7 +1025,6 @@ bool fetchForecast(DayForecast& today, DayForecast& tomorrow) {
     Serial.print("HTTP code: "); Serial.println(code);
 
     if(code == 200) {
-        WiFiClient* stream = http.getStreamPtr();
         DynamicJsonDocument doc(20000);
         DeserializationError err = deserializeJson(doc, http.getStream());
         
@@ -570,9 +1081,10 @@ int compareVersions(const String& v1, const String& v2)
 
 void checkForOTA() {
   if (WiFi.status() != WL_CONNECTED) return;
+  if (!config.otaVersionUrl.length() || !config.otaFirmwareUrl.length()) return;
 
   HTTPClient http;
-  http.begin(versionURL);
+  http.begin(config.otaVersionUrl);
 
   int httpCode = http.GET();
   if (httpCode != 200) {
@@ -594,7 +1106,7 @@ void checkForOTA() {
     WiFiClientSecure client;
     client.setInsecure(); 
 
-  t_httpUpdate_return ret = httpUpdate.update(client, firmwareURL);
+  t_httpUpdate_return ret = httpUpdate.update(client, config.otaFirmwareUrl);
 
   switch (ret) {
     case HTTP_UPDATE_FAILED:
@@ -655,6 +1167,13 @@ void drawIcon(
 }
 
 
+int dayIndexWithOffset(time_t utc, int timezoneOffset) {
+    time_t localEpoch = utc + timezoneOffset;
+    struct tm localTm;
+    gmtime_r(&localEpoch, &localTm);
+    return localTm.tm_yday;
+}
+
 void extractTodayTomorrow(JsonDocument& doc,
                            DayForecast& today,
                            DayForecast& tomorrow,
@@ -664,19 +1183,13 @@ void extractTodayTomorrow(JsonDocument& doc,
 
     // Convert "now" to LOCAL time
     time_t nowUTC   = time(nullptr);
-    time_t nowLocal = nowUTC;// + timezoneOffset;
-    int todayIdx    = dayIndex(nowLocal);
+    int todayIdx    = dayIndexWithOffset(nowUTC, timezoneOffset);
     Serial.println(todayIdx);
 
     for (JsonObject item : doc["list"].as<JsonArray>()) {
 
-        // Convert forecast time to LOCAL time
         time_t tUTC   = item["dt"];
-        time_t tLocal = tUTC + timezoneOffset;
-
-        // Serial.println(tLocal);
-        int idx       = dayIndex(tLocal);
-        // Serial.println(idx);
+        int idx       = dayIndexWithOffset(tUTC, timezoneOffset);
 
         DayForecast* d = nullptr;
 
@@ -780,12 +1293,15 @@ String utf8ToLatin1(const String& s) {
 }
 
 float readBatteryVoltageAvg(int samples = 20) {
+    if (config.batPin < 0) {
+        return 0.0f;
+    }
     analogReadResolution(12);  // 0–4095
-    analogSetPinAttenuation(BAT_PIN, ADC_11db);
+    analogSetPinAttenuation(config.batPin, ADC_11db);
 
     long sum = 0;
     for (int i = 0; i < samples; i++) {
-        sum += analogRead(BAT_PIN);
+        sum += analogRead(config.batPin);
         delay(5);
     }
     float raw = sum / (float)samples;
@@ -833,8 +1349,7 @@ void drawStatus()
   display.print( buf );
 
   struct tm t;
-  setenv("TZ", "EST5EDT,M3.2.0/2,M11.1.0/2", 1);
-  tzset();
+  setTimezoneEST();
   if (getLocalTime(&t)) {
         Serial.println("Time");
         snprintf(buf, sizeof(buf),

@@ -1,0 +1,127 @@
+name: Build Firmware
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Firmware version to embed and release
+        required: true
+        default: "0.1.1"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: esp32
+            fqbn: esp32:esp32:esp32
+            build-dir: build_esp32
+          - name: esp32c6
+            fqbn: esp32:esp32:esp32c6
+            build-dir: build_esp32c6
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache Arduino packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.arduino15/packages
+            ~/.arduino15/staging
+            ~/Arduino/libraries
+          key: arduino-${{ runner.os }}-esp32-3_3_7-mycal-v1
+          restore-keys: |
+            arduino-${{ runner.os }}-esp32-3_3_7-mycal-
+            arduino-${{ runner.os }}-esp32-
+
+      - name: Setup Arduino CLI
+        uses: arduino/setup-arduino-cli@v2
+
+      - name: Install ESP32 core
+        run: |
+          arduino-cli config init
+          arduino-cli config add board_manager.additional_urls \
+            https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32@3.3.7
+
+      - name: Install libraries
+        run: |
+          arduino-cli lib install \
+            "Adafruit GFX Library@1.12.5" \
+            "Adafruit BusIO@1.17.4" \
+            "GxEPD2@1.6.8" \
+            "ArduinoJson@7.4.3"
+
+      - name: Patch GxEPD2 for ESP32
+        run: |
+          sed -i 's|#include <avr/pgmspace.h>|#include <pgmspace.h>|' \
+            ~/Arduino/libraries/GxEPD2/src/GxEPD2_EPD.cpp
+
+      - name: Patch Adafruit_BusIO for ESP32 core 3.x
+        run: |
+          FILE="$HOME/Arduino/libraries/Adafruit_BusIO/Adafruit_SPIDevice.h"
+          sed -i 's/SPI_BITORDER_MSBFIRST = SPI_MSBFIRST/SPI_BITORDER_MSBFIRST = MSBFIRST/' "$FILE"
+          sed -i 's/SPI_BITORDER_LSBFIRST = SPI_LSBFIRST/SPI_BITORDER_LSBFIRST = LSBFIRST/' "$FILE"
+
+      - name: Compile sketch
+        env:
+          VERSION: ${{ github.event.inputs.version }}
+        run: |
+          arduino-cli compile \
+            --fqbn "${{ matrix.fqbn }}" \
+            --board-options "PartitionScheme=default" \
+            --build-property 'compiler.cpp.extra_flags=-DFW_VERSION=\"'"$VERSION"'\"' \
+            --export-binaries \
+            --output-dir "${{ matrix.build-dir }}" \
+            ./myCal_75_events.ino
+
+      - name: Package firmware
+        env:
+          VERSION: ${{ github.event.inputs.version }}
+        run: |
+          mkdir -p release/${{ matrix.name }}
+          cp "${{ matrix.build-dir }}"/*.bin "release/${{ matrix.name }}/"
+          BOOTLOADER="$(find release/${{ matrix.name }} -name '*bootloader*.bin' | head -n 1)"
+          PARTITIONS="$(find release/${{ matrix.name }} -name '*partitions*.bin' | head -n 1)"
+          FIRMWARE="$(find release/${{ matrix.name }} -name '*.ino.bin' | head -n 1)"
+          if [ -n "$BOOTLOADER" ]; then mv "$BOOTLOADER" "release/${{ matrix.name }}/bootloader-${{ matrix.name }}.bin"; fi
+          if [ -n "$PARTITIONS" ]; then mv "$PARTITIONS" "release/${{ matrix.name }}/partitions-${{ matrix.name }}.bin"; fi
+          if [ -n "$FIRMWARE" ]; then mv "$FIRMWARE" "release/${{ matrix.name }}/myCal_75_events-${{ matrix.name }}.bin"; fi
+          printf "%s\n" "$VERSION" > "release/${{ matrix.name }}/version-${{ matrix.name }}.txt"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ matrix.name }}
+          path: release/${{ matrix.name }}
+          retention-days: 365
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Download firmware artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release
+
+      - name: Collect release files
+        run: |
+          mkdir -p publish
+          find release -type f \( -name "*.bin" -o -name "version.txt" \) -exec cp {} publish/ \;
+          find release -type f -name "version-*.txt" -exec cp {} publish/ \;
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: firmware-${{ github.event.inputs.version }}
+          name: myCal firmware ${{ github.event.inputs.version }}
+          files: publish/*
