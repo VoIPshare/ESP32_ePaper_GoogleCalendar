@@ -102,19 +102,19 @@ void setup()
         events,
         eventCount)) {
 
-    Serial.println("Days with events:");
-    for (int i = 0; i < daysCount; i++) {
-      Serial.println(daysWithEvents[i]);
-    }
+    // Serial.println("Days with events:");
+    // for (int i = 0; i < daysCount; i++) {
+    //   Serial.println(daysWithEvents[i]);
+    // }
 
-    Serial.println("\nNext 24h events:");
-    for (int i = 0; i < eventCount; i++) {
-      Serial.printf(
-        "- %s (%s → %s)\n",
-        events[i].title.c_str(),
-        events[i].start.c_str(),
-        events[i].end.c_str()
-      );
+    // Serial.println("\nNext 24h events:");
+    // for (int i = 0; i < eventCount; i++) {
+    //   Serial.printf(
+    //     "- %s (%s → %s)\n",
+    //     events[i].title.c_str(),
+    //     events[i].start.c_str(),
+    //     events[i].end.c_str()
+    //   );
     }
   }
 
@@ -936,7 +936,7 @@ bool fetchCalendarData(
   }
   Serial.println("READING");
   String payload = http.getString();
-  Serial.println( payload );
+  // Serial.println( payload );
   http.end();
 
   // Adjust size if needed
@@ -1000,7 +1000,7 @@ void drawForecast(int x, int y, uint16_t color) {
 
         if (forecasts[i]->valid) {
             drawIcon(
-                blockX, y + 20,
+                blockX, y,
                 48, 48,
                 getWeatherIconFromOW(forecasts[i]->icon),
                 getWeatherIconColor(forecasts[i]->icon)
@@ -1009,10 +1009,10 @@ void drawForecast(int x, int y, uint16_t color) {
             String tempText = utf8ToLatin1(
                 String((int)forecasts[i]->minTemp) + "° / " + String((int)forecasts[i]->maxTemp) + "°"
             );
-            display.setCursor(blockX + 55, y + 52);
+            display.setCursor(blockX + 55, y + 30);
             display.print(tempText);
         } else {
-            display.setCursor(blockX, y + 52);
+            display.setCursor(blockX, y + 30);
             display.print("No forecast");
         }
     }
