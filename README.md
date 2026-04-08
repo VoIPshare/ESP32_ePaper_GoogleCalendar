@@ -15,7 +15,7 @@ This project runs on an ESP32 and shows:
 4. Open `http://192.168.4.1`.
 5. Choose a hardware profile, then review or edit the pins if needed.
 6. Choose the refresh interval for deep sleep wake-up.
-7. Enter your Wi-Fi, weather, Google Script, and optional OTA URLs.
+7. Enter your Wi-Fi, Open-Meteo location, Google Script, and optional OTA URLs.
 8. Save the form and let the device reboot.
 
 Google Apps Script: [https://script.google.com/home/](https://script.google.com/home/)
@@ -29,7 +29,6 @@ Required fields in the setup page:
 - Wi-Fi SSID and password
 - refresh interval: `6`, `12`, `18`, or `24` hours
 - hardware profile and display pins
-- OpenWeather API key
 - city
 - country code
 - Google Apps Script ID
@@ -71,13 +70,16 @@ You can paste those URLs directly into the setup page so the device can check Gi
 
 ## Weather Provider
 
-The project currently uses OpenWeather, but Open-Meteo would likely be a better fit for this device:
+The project now uses [Open-Meteo](https://api.open-meteo.com/).
+
+Why this is a better fit here:
 
 - no API key required
-- simpler deployment for other people flashing the project
-- daily forecast endpoints match an e-paper dashboard well
+- simpler setup page
+- easier sharing and flashing for other people
+- daily forecast data matches an e-paper dashboard well
 
-If we switch later, the setup page can be simplified because the weather API key field would disappear.
+The device geocodes the configured city and country code through Open-Meteo, then loads a 2-day daily forecast for min temperature, max temperature, and weather code.
 
 ## Fonts
 

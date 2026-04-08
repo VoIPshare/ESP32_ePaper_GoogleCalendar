@@ -170,7 +170,6 @@ void loadConfig()
   hasStoredConfig =
     preferences.isKey("wifi_ssid") ||
     preferences.isKey("wifi_pass") ||
-    preferences.isKey("weather_key") ||
     preferences.isKey("city") ||
     preferences.isKey("country") ||
     preferences.isKey("google_id") ||
@@ -178,7 +177,6 @@ void loadConfig()
 
   config.wifiSsid = preferences.getString("wifi_ssid", "");
   config.wifiPass = preferences.getString("wifi_pass", "");
-  config.weatherApiKey = preferences.getString("weather_key", "");
   config.city = preferences.getString("city", "");
   config.country = preferences.getString("country", "");
   config.googleScriptId = preferences.getString("google_id", "");
@@ -274,7 +272,6 @@ bool isConfigComplete()
     hasStoredConfig &&
     config.wifiSsid.length() &&
     config.wifiPass.length() &&
-    config.weatherApiKey.length() &&
     config.city.length() &&
     config.country.length() &&
     config.googleScriptId.length();
@@ -467,11 +464,7 @@ function applyProfile() {
 <input id="google_id" name="google_id" value=")rawliteral";
   html += htmlEscape(config.googleScriptId);
   html += R"rawliteral(">
-<label for="weather_key">OpenWeather API key</label>
-<input id="weather_key" name="weather_key" value=")rawliteral";
-  html += htmlEscape(config.weatherApiKey);
-  html += R"rawliteral(">
-<label for="city">City</label>
+<label for="city">City for Open-Meteo geocoding</label>
 <input id="city" name="city" value=")rawliteral";
   html += htmlEscape(config.city);
   html += R"rawliteral(">
@@ -510,7 +503,6 @@ void handleConfigSave()
   config.sleepHours = server.arg("sleep_hours").toInt();
   config.boardProfile = server.arg("board_profile");
   config.googleScriptId = server.arg("google_id");
-  config.weatherApiKey = server.arg("weather_key");
   config.city = server.arg("city");
   config.country = server.arg("country");
   config.otaVersionUrl = server.arg("ota_ver");
@@ -534,7 +526,6 @@ void handleConfigSave()
   preferences.putInt("sleep_hours", config.sleepHours);
   preferences.putString("board_profile", config.boardProfile);
   preferences.putString("google_id", config.googleScriptId);
-  preferences.putString("weather_key", config.weatherApiKey);
   preferences.putString("city", config.city);
   preferences.putString("country", config.country);
   preferences.putString("ota_ver", config.otaVersionUrl);
@@ -957,11 +948,11 @@ bool fetchCalendarData(
 }
 
 void drawForecast(int x, int y, uint16_t color) {
-    DayForecast today, tomorrow;
+    DayForecast today, tomorrow, dayAfterTomorrow;
 
     display.setFont(&Geologica_Bold14pt8b);
 
-    if (!fetchForecast(today, tomorrow)) {
+    if (!fetchForecast(today, tomorrow, dayAfterTomorrow)) {
         display.setTextColor(GxEPD_RED);
         display.setCursor(x, y + 32);
         display.print("Weather unavailable");
@@ -987,7 +978,7 @@ void drawForecast(int x, int y, uint16_t color) {
     }
     
     // TOMORROW 
-    x += 200;
+    x += 180;
     if (tomorrow.valid) {
         drawIcon(
             x, y,
@@ -1003,17 +994,42 @@ void drawForecast(int x, int y, uint16_t color) {
         display.setCursor(x, y + 32);
         display.print("No forecast");
     }
+
+    x += 180;
+    if (dayAfterTomorrow.valid) {
+        drawIcon(
+            x, y,
+            48, 48,
+            getWeatherIconFromOW(dayAfterTomorrow.icon),
+            getWeatherIconColor(dayAfterTomorrow.icon)
+        );
+
+        String tempText = utf8ToLatin1(String((int)dayAfterTomorrow.minTemp) + "° / " + String((int)dayAfterTomorrow.maxTemp) + "°");
+        display.setCursor(x + 55, y + 32);
+        display.print(tempText);
+    } else {
+        display.setCursor(x, y + 32);
+        display.print("No forecast");
+    }
 }
 
 
-bool fetchForecast(DayForecast& today, DayForecast& tomorrow) {
-    bool status=false;
-    char forecastURL[256];
-    snprintf(forecastURL, sizeof(forecastURL),
-         "https://api.openweathermap.org/data/2.5/forecast?q=%s,%s&units=metric&cnt=16&appid=%s",
-         config.city.c_str(),
-         config.country.c_str(),
-         config.weatherApiKey.c_str());
+bool fetchForecast(DayForecast& today, DayForecast& tomorrow, DayForecast& dayAfterTomorrow) {
+    bool status = false;
+    float latitude = 0.0f;
+    float longitude = 0.0f;
+    if (!fetchCoordinates(latitude, longitude)) {
+        return false;
+    }
+
+    char forecastURL[384];
+    snprintf(
+        forecastURL,
+        sizeof(forecastURL),
+        "https://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f&daily=temperature_2m_max,temperature_2m_min,weather_code&forecast_days=3&timezone=auto",
+        latitude,
+        longitude
+    );
 
     WiFiClientSecure client;
     client.setInsecure(); // for testing only
@@ -1025,16 +1041,39 @@ bool fetchForecast(DayForecast& today, DayForecast& tomorrow) {
     Serial.print("HTTP code: "); Serial.println(code);
 
     if(code == 200) {
-        DynamicJsonDocument doc(20000);
-        DeserializationError err = deserializeJson(doc, http.getStream());
+        DynamicJsonDocument doc(12000);
+        String payload = http.getString();
+        DeserializationError err = deserializeJson(doc, payload);
         
         if(err) {
             Serial.print("JSON parse failed: "); Serial.println(err.c_str());
+            Serial.println(payload);
         } else {
-            Serial.println("JSON parsed successfully!");
-            int timezoneOffset = doc["city"]["timezone"];  
-            extractTodayTomorrow(doc, today, tomorrow, timezoneOffset);
-            status=true;
+            JsonArray mins = doc["daily"]["temperature_2m_min"].as<JsonArray>();
+            JsonArray maxs = doc["daily"]["temperature_2m_max"].as<JsonArray>();
+            JsonArray codes = doc["daily"]["weather_code"].as<JsonArray>();
+
+            if (mins.size() > 0 && maxs.size() > 0 && codes.size() > 0) {
+                today.minTemp = mins[0].as<float>();
+                today.maxTemp = maxs[0].as<float>();
+                today.icon = String(codes[0].as<int>());
+                today.valid = true;
+                status = true;
+            }
+
+            if (mins.size() > 1 && maxs.size() > 1 && codes.size() > 1) {
+                tomorrow.minTemp = mins[1].as<float>();
+                tomorrow.maxTemp = maxs[1].as<float>();
+                tomorrow.icon = String(codes[1].as<int>());
+                tomorrow.valid = true;
+            }
+
+            if (mins.size() > 2 && maxs.size() > 2 && codes.size() > 2) {
+                dayAfterTomorrow.minTemp = mins[2].as<float>();
+                dayAfterTomorrow.maxTemp = maxs[2].as<float>();
+                dayAfterTomorrow.icon = String(codes[2].as<int>());
+                dayAfterTomorrow.valid = true;
+            }
         }
     } else {
         Serial.println("HTTP GET failed");
@@ -1042,6 +1081,57 @@ bool fetchForecast(DayForecast& today, DayForecast& tomorrow) {
     http.end();
 
     return status;
+}
+
+bool fetchCoordinates(float& latitude, float& longitude) {
+    String city = config.city;
+    city.replace(" ", "%20");
+
+    String country = config.country;
+    country.trim();
+
+    char url[384];
+    snprintf(
+        url,
+        sizeof(url),
+        "https://geocoding-api.open-meteo.com/v1/search?name=%s&count=1&language=en&format=json%s%s",
+        city.c_str(),
+        country.length() ? "&countryCode=" : "",
+        country.length() ? country.c_str() : ""
+    );
+
+    WiFiClientSecure client;
+    client.setInsecure();
+
+    HTTPClient http;
+    http.begin(client, url);
+    int code = http.GET();
+    if (code != 200) {
+        Serial.printf("Geocoding HTTP error: %d\n", code);
+        http.end();
+        return false;
+    }
+
+    DynamicJsonDocument doc(12000);
+    String payload = http.getString();
+    DeserializationError err = deserializeJson(doc, payload);
+    http.end();
+    if (err) {
+        Serial.print("Geocoding JSON parse failed: ");
+        Serial.println(err.c_str());
+        Serial.println(payload);
+        return false;
+    }
+
+    JsonArray results = doc["results"].as<JsonArray>();
+    if (results.isNull() || results.size() == 0) {
+        Serial.println("No geocoding results");
+        return false;
+    }
+
+    latitude = results[0]["latitude"].as<float>();
+    longitude = results[0]["longitude"].as<float>();
+    return true;
 }
 
 
@@ -1127,19 +1217,22 @@ void checkForOTA() {
 const uint8_t*  getWeatherIconFromOW(const String& icon) {
   Serial.println("getWeatherIconFromOW");
   Serial.println( icon );
-    if (icon.startsWith("01")) return ICON_SUNNY_48;
-    if (icon.startsWith("02")) return ICON_PARTLYCLOUDY_48;
-    if (icon.startsWith("03") || icon.startsWith("04")) return ICON_CLOUDY_48;
-    if (icon.startsWith("09") || icon.startsWith("10")) return ICON_RAINY_48;
-    if (icon.startsWith("11")) return ICON_RAINY_48; //thunder
-    if (icon.startsWith("13")) return ICON_SNOW_48;
-    if (icon.startsWith("50")) return ICON_FOG_48;
+    int code = icon.toInt();
+    if (code == 0 || code == 1) return ICON_SUNNY_48;
+    if (code == 2) return ICON_PARTLYCLOUDY_48;
+    if (code == 3) return ICON_CLOUDY_48;
+    if (code == 45 || code == 48) return ICON_FOG_48;
+    if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82)) return ICON_RAINY_48;
+    if (code >= 71 && code <= 77) return ICON_SNOW_48;
+    if (code >= 85 && code <= 86) return ICON_SNOW_48;
+    if (code >= 95) return ICON_RAINY_48;
     return ICON_SUNNY_48;
 }
 
 uint16_t getWeatherIconColor(const String& icon) {
-    if (icon.startsWith("01")) return GxEPD_YELLOW;      // sunny
-    if (icon.startsWith("11")) return GxEPD_RED;         // thunder
+    int code = icon.toInt();
+    if (code == 0 || code == 1) return GxEPD_YELLOW;
+    if (code >= 95) return GxEPD_RED;
     return GxEPD_BLACK;
 }
 

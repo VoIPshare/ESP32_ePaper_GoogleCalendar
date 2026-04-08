@@ -5,7 +5,6 @@
 struct DeviceConfig {
   String wifiSsid;
   String wifiPass;
-  String weatherApiKey;
   String city;
   String country;
   String googleScriptId;
@@ -62,7 +61,8 @@ String formatEventDateTimeEST(const String&, bool, const String&);
 int dayIndex(time_t) ;
 int dayIndexWithOffset(time_t, int);
 void extractTodayTomorrow(JsonDocument& ,DayForecast& , DayForecast& ,int );
-bool fetchForecast(DayForecast& tday, DayForecast& );
+bool fetchForecast(DayForecast&, DayForecast&, DayForecast&);
+bool fetchCoordinates(float&, float&);
 int compareVersions(const String& , const String& );
 void checkForOTA();
 
