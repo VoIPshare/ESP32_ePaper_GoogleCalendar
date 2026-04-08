@@ -7,6 +7,7 @@ struct DeviceConfig {
   String wifiPass;
   String city;
   String country;
+  String timezone;
   String googleScriptId;
   String otaVersionUrl;
   String otaFirmwareUrl;
@@ -60,9 +61,9 @@ String buildSleepOptions();
 String urlEncode(const String&);
 void handleConfigRoot();
 void handleConfigSave();
-void setTimezoneEST();
+void setConfiguredTimezone();
 bool parseIsoUtc(const String&, time_t&);
-String formatEventDateTimeEST(const String&, bool, const String&);
+String formatEventDateTimeLocal(const String&, bool, const String&);
 
 int dayIndex(time_t) ;
 int dayIndexWithOffset(time_t, int);
