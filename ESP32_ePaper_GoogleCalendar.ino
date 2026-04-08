@@ -30,6 +30,7 @@
 // WIFI CONFIG
 // ===================
 const char* AP_NAME = "myCal-Setup";
+const char* OTA_REPO_BASE = "https://github.com/VoIPshare/ESP32_ePaper_GoogleCalendar/releases/latest/download";
 
 #ifndef FW_VERSION
 #define FW_VERSION "0.1.1"
@@ -270,6 +271,22 @@ bool shouldCheckForOTA()
   return true;
 }
 
+String defaultOtaVersionUrl()
+{
+  if (config.boardProfile == "esp32c6") {
+    return String(OTA_REPO_BASE) + "/version-esp32c6.txt";
+  }
+  return String(OTA_REPO_BASE) + "/version-esp32.txt";
+}
+
+String defaultOtaFirmwareUrl()
+{
+  if (config.boardProfile == "esp32c6") {
+    return String(OTA_REPO_BASE) + "/ESP32_ePaper_GoogleCalendar-esp32c6.bin";
+  }
+  return String(OTA_REPO_BASE) + "/ESP32_ePaper_GoogleCalendar-esp32.bin";
+}
+
 bool isConfigComplete()
 {
   return
@@ -500,15 +517,7 @@ function applyProfile() {
   html += R"rawliteral(">
 <label><input type="checkbox" name="ota_enabled" )rawliteral";
   html += config.otaEnabled ? "checked" : "";
-  html += R"rawliteral(> Check GitHub updates every 12 hours</label>
-<label for="ota_ver">OTA version URL</label>
-<input id="ota_ver" name="ota_ver" value=")rawliteral";
-  html += htmlEscape(config.otaVersionUrl);
-  html += R"rawliteral(">
-<label for="ota_fw">OTA firmware URL</label>
-<input id="ota_fw" name="ota_fw" value=")rawliteral";
-  html += htmlEscape(config.otaFirmwareUrl);
-  html += R"rawliteral(">
+  html += R"rawliteral(> Check GitHub updates every 12 hours from VoIPshare/ESP32_ePaper_GoogleCalendar</label>
 <button type="submit">Save configuration</button>
 </form>
 </div>
@@ -535,8 +544,6 @@ void handleConfigSave()
   config.city = server.arg("city");
   config.country = server.arg("country");
   config.otaEnabled = server.hasArg("ota_enabled");
-  config.otaVersionUrl = server.arg("ota_ver");
-  config.otaFirmwareUrl = server.arg("ota_fw");
   config.epdCs = server.arg("epd_cs").toInt();
   config.epdDc = server.arg("epd_dc").toInt();
   config.epdRst = server.arg("epd_rst").toInt();
@@ -549,6 +556,9 @@ void handleConfigSave()
   if (config.boardProfile != "custom") {
     applyBoardProfile(config.boardProfile, true);
   }
+
+  config.otaVersionUrl = defaultOtaVersionUrl();
+  config.otaFirmwareUrl = defaultOtaFirmwareUrl();
 
   preferences.begin("config", false);
   preferences.putString("wifi_ssid", config.wifiSsid);

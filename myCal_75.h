@@ -50,6 +50,8 @@ bool isKnownBoardProfile(const String&);
 void initDisplayHardware();
 uint64_t sleepDurationUs();
 bool shouldCheckForOTA();
+String defaultOtaVersionUrl();
+String defaultOtaFirmwareUrl();
 void startConfigPortal();
 void drawConfigNeededScreen(const char* apName, const IPAddress& ip);
 String buildConfigPage();

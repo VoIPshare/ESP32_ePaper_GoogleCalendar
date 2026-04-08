@@ -15,7 +15,7 @@ This project runs on an ESP32 and shows:
 4. Open `http://192.168.4.1`.
 5. Choose a hardware profile, then review or edit the pins if needed.
 6. Choose the refresh interval for deep sleep wake-up.
-7. Enter your Wi-Fi, Open-Meteo location, Google Script, and optional OTA URLs.
+7. Enter your Wi-Fi, Open-Meteo location, and Google Script ID.
 8. Save the form and let the device reboot.
 
 Google Apps Script: [https://script.google.com/home/](https://script.google.com/home/)
@@ -36,8 +36,6 @@ Required fields in the setup page:
 Optional fields:
 
 - enable GitHub Releases update checks every 12 hours
-- OTA version URL
-- OTA firmware URL
 
 Built-in hardware profiles:
 
@@ -60,16 +58,14 @@ The selected refresh interval controls the deep sleep timer between dashboard up
 
 The GitHub workflow builds `esp32` and `esp32c6` firmware and publishes stable release asset names suitable for OTA.
 
-Example OTA URLs:
+Built-in OTA URLs:
 
-- `https://github.com/<owner>/<repo>/releases/latest/download/version-esp32.txt`
-- `https://github.com/<owner>/<repo>/releases/latest/download/ESP32_ePaper_GoogleCalendar-esp32.bin`
-- `https://github.com/<owner>/<repo>/releases/latest/download/version-esp32c6.txt`
-- `https://github.com/<owner>/<repo>/releases/latest/download/ESP32_ePaper_GoogleCalendar-esp32c6.bin`
+- `https://github.com/VoIPshare/ESP32_ePaper_GoogleCalendar/releases/latest/download/version-esp32.txt`
+- `https://github.com/VoIPshare/ESP32_ePaper_GoogleCalendar/releases/latest/download/ESP32_ePaper_GoogleCalendar-esp32.bin`
+- `https://github.com/VoIPshare/ESP32_ePaper_GoogleCalendar/releases/latest/download/version-esp32c6.txt`
+- `https://github.com/VoIPshare/ESP32_ePaper_GoogleCalendar/releases/latest/download/ESP32_ePaper_GoogleCalendar-esp32c6.bin`
 
-You can paste those URLs directly into the setup page so the device can check GitHub Releases for updates.
-If the GitHub update checkbox is enabled, the device will check for updates at most once every 12 hours after the previous successful version check.
-The OTA URL fields are intentionally manual so forks and custom firmware builds do not accidentally update from the upstream project.
+If the GitHub update checkbox is enabled, the device will check those release assets at most once every 12 hours after the previous successful version check.
 
 ## Weather Provider
 
