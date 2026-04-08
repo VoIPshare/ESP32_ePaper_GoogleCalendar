@@ -76,7 +76,7 @@ jobs:
           arduino-cli compile \
             --fqbn "${{ matrix.fqbn }}" \
             --board-options "PartitionScheme=default" \
-            --build-property 'compiler.cpp.extra_flags=-DFW_VERSION=\"'"$VERSION"'\"' \
+            --build-property compiler.cpp.extra_flags="-DFW_VERSION=\"$VERSION\"" \
             --export-binaries \
             --output-dir "${{ matrix.build-dir }}" \
             ./ESP32_ePaper_GoogleCalendar.ino
