@@ -47,11 +47,15 @@ Built-in hardware profiles:
 
 The profile fills the default pins, and you can still override them in the form before saving.
 
-Current preset pins:
+## Wiring Table
 
-- `esp32-waveshare`: `CS=15`, `DC=27`, `RST=26`, `BUSY=25`, `SCK=13`, `MOSI=14`, `DisplayPower=4`, `Battery=35`
-- `esp32`: `CS=15`, `DC=27`, `RST=26`, `BUSY=25`, `SCK=13`, `MOSI=14`, `DisplayPower=4`, `Battery=35`
-- `esp32c6`: `CS=1`, `DC=8`, `RST=14`, `BUSY=7`, `SCK=23`, `MOSI=22`, `DisplayPower=4`, `Battery=0`
+Use the preset that matches your board, then wire the display to these pins:
+
+| Profile | EPD CS | EPD DC | EPD RST | EPD BUSY | EPD SCK | EPD MOSI | Display Power | Battery ADC |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `esp32-waveshare` | 15 | 27 | 26 | 25 | 13 | 14 | 4 | 35 |
+| `esp32` | 15 | 27 | 26 | 25 | 13 | 14 | 4 | 35 |
+| `esp32c6` | 1 | 8 | 14 | 7 | 23 | 22 | 4 | 0 |
 
 The selected refresh interval controls the deep sleep timer between dashboard updates.
 
