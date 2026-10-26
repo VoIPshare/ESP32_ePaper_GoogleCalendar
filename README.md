@@ -15,7 +15,7 @@ The display wakes once per refresh interval (6, 12, 18 or 24 hours), connects to
 
 ## Setup
 
-1. Flash the firmware: a prebuilt release (flash `ESP32_ePaper_GoogleCalendar-<board>-merged.bin` at address `0x0`), or build it yourself (see below).
+1. Flash the firmware: a prebuilt release (flash `esp32-full.bin` or `esp32c6-full.bin` at address `0x0`), or build it yourself (see below).
 2. On first boot the screen shows "Configuration required". Join the Wi-Fi network `myCal-Setup`.
 3. The setup page opens by itself (captive portal). If it doesn't, browse to `http://192.168.4.1`.
 4. Fill in the form and press **Save configuration**. The device restarts and draws the calendar.
@@ -86,18 +86,26 @@ To publish a beta:
 1. On the `beta` branch, set a pre-release version, e.g. `#define FW_VERSION "0.2.0-beta.1"`, and push.
 2. Run the workflow and pick the `beta` branch in **Use workflow from**. It creates the pre-release `firmware-0.2.0-beta.1`.
 
-To try a beta, download `ESP32_ePaper_GoogleCalendar-<board>-merged.bin` from the pre-release on the [Releases page](https://github.com/VoIPshare/ESP32_ePaper_GoogleCalendar/releases) and flash it at `0x0`. Your settings are kept unless you erase the flash. A beta sorts below its stable version (`0.2.0-beta.1` < `0.2.0`), so with GitHub updates enabled the device moves to `0.2.0` by itself when it is released, and never goes back to an older stable version.
+To try a beta, download `esp32-full.bin` (or `esp32c6-full.bin`) from the pre-release on the [Releases page](https://github.com/VoIPshare/ESP32_ePaper_GoogleCalendar/releases) and flash it at `0x0`. Your settings are kept unless you erase the flash. A beta sorts below its stable version (`0.2.0-beta.1` < `0.2.0`), so with GitHub updates enabled the device moves to `0.2.0` by itself when it is released, and never goes back to an older stable version.
 
 To release the beta as stable, merge `beta` into `main`, set `FW_VERSION` to `0.2.0` and run the workflow on `main`. Stable versions can only be released from `main`.
 
-Each release contains, per board: the OTA image `ESP32_ePaper_GoogleCalendar-<board>.bin`, `version-<board>.txt`, a merged image for a first flash at `0x0`, and the bootloader and partition table.
+Each release contains, per board (`esp32`, `esp32c6`):
 
-The device uses these URLs:
+| File | Use |
+| --- | --- |
+| `<board>-full.bin` | Complete image for flashing over USB at address `0x0` (first install, or to try a beta) |
+| `<board>-ota.bin` | Downloaded by the device for over-the-air updates |
+| `<board>-version.txt` | The release version, checked by the device before downloading |
 
-- `https://github.com/VoIPshare/ESP32_ePaper_GoogleCalendar/releases/latest/download/version-esp32.txt`
-- `https://github.com/VoIPshare/ESP32_ePaper_GoogleCalendar/releases/latest/download/ESP32_ePaper_GoogleCalendar-esp32.bin`
-- `https://github.com/VoIPshare/ESP32_ePaper_GoogleCalendar/releases/latest/download/version-esp32c6.txt`
-- `https://github.com/VoIPshare/ESP32_ePaper_GoogleCalendar/releases/latest/download/ESP32_ePaper_GoogleCalendar-esp32c6.bin`
+The device builds its update links from these names, for the chip the firmware was built for:
+
+- `https://github.com/VoIPshare/ESP32_ePaper_GoogleCalendar/releases/latest/download/esp32-version.txt`
+- `https://github.com/VoIPshare/ESP32_ePaper_GoogleCalendar/releases/latest/download/esp32-ota.bin`
+- `https://github.com/VoIPshare/ESP32_ePaper_GoogleCalendar/releases/latest/download/esp32c6-version.txt`
+- `https://github.com/VoIPshare/ESP32_ePaper_GoogleCalendar/releases/latest/download/esp32c6-ota.bin`
+
+Firmware before 0.2.0 used other file names and could not follow GitHub's download redirects, so those devices need to be flashed over USB once.
 
 ## Project structure
 

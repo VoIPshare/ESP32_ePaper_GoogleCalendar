@@ -35,7 +35,7 @@ const char* OTA_REPO_BASE = "https://github.com/VoIPshare/ESP32_ePaper_GoogleCal
 const char* DEFAULT_DEVICE_TZ = "EST5EDT,M3.2.0/2,M11.1.0/2";
 
 #ifndef FW_VERSION
-#define FW_VERSION "0.2.0"
+#define FW_VERSION "0.2.1"
 #endif
 #define uS_TO_S_FACTOR 1000000ULL
 
@@ -175,8 +175,9 @@ void loadConfig()
     config.icsUrls[i] = preferences.getString(ICS_PREF_KEYS[i], "");
   }
   config.timezone = preferences.getString("timezone", DEFAULT_DEVICE_TZ);
-  config.otaVersionUrl = preferences.getString("ota_ver", "");
-  config.otaFirmwareUrl = preferences.getString("ota_fw", "");
+  // Built from the release asset names, so a renamed asset doesn't leave old links in flash.
+  config.otaVersionUrl = defaultOtaVersionUrl();
+  config.otaFirmwareUrl = defaultOtaFirmwareUrl();
   config.boardProfile = preferences.getString("board_profile", "esp32-waveshare");
   config.otaEnabled = preferences.getBool("ota_enabled", false);
   config.sleepHours = preferences.getInt("sleep_hours", 12);
@@ -279,20 +280,22 @@ bool shouldCheckForOTA()
   return true;
 }
 
+// Release asset names: <board>-version.txt and <board>-ota.bin (see the GitHub workflow).
+// The board comes from the chip the firmware was built for, not the pin profile.
+#if CONFIG_IDF_TARGET_ESP32C6
+#define OTA_BOARD "esp32c6"
+#else
+#define OTA_BOARD "esp32"
+#endif
+
 String defaultOtaVersionUrl()
 {
-  if (config.boardProfile == "esp32c6") {
-    return String(OTA_REPO_BASE) + "/version-esp32c6.txt";
-  }
-  return String(OTA_REPO_BASE) + "/version-esp32.txt";
+  return String(OTA_REPO_BASE) + "/" OTA_BOARD "-version.txt";
 }
 
 String defaultOtaFirmwareUrl()
 {
-  if (config.boardProfile == "esp32c6") {
-    return String(OTA_REPO_BASE) + "/ESP32_ePaper_GoogleCalendar-esp32c6.bin";
-  }
-  return String(OTA_REPO_BASE) + "/ESP32_ePaper_GoogleCalendar-esp32.bin";
+  return String(OTA_REPO_BASE) + "/" OTA_BOARD "-ota.bin";
 }
 
 bool hasIcsFeeds()
@@ -570,9 +573,6 @@ void handleConfigSave()
     config.timezone = DEFAULT_DEVICE_TZ;
   }
 
-  config.otaVersionUrl = defaultOtaVersionUrl();
-  config.otaFirmwareUrl = defaultOtaFirmwareUrl();
-
   preferences.begin("config", false);
   preferences.putString("wifi_ssid", config.wifiSsid);
   preferences.putString("wifi_pass", config.wifiPass);
@@ -588,8 +588,8 @@ void handleConfigSave()
   preferences.remove("city");
   preferences.remove("country");
   preferences.putBool("ota_enabled", config.otaEnabled);
-  preferences.putString("ota_ver", config.otaVersionUrl);
-  preferences.putString("ota_fw", config.otaFirmwareUrl);
+  preferences.remove("ota_ver");
+  preferences.remove("ota_fw");
   preferences.putInt("epd_cs", config.epdCs);
   preferences.putInt("epd_dc", config.epdDc);
   preferences.putInt("epd_rst", config.epdRst);

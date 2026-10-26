@@ -137,8 +137,11 @@ jobs:
           echo "### ${{ matrix.name }}" >> "$GITHUB_STEP_SUMMARY"
           grep -E "Sketch uses|Global variables" compile.log >> "$GITHUB_STEP_SUMMARY" || true
 
-      # OTA downloads ESP32_ePaper_GoogleCalendar-<board>.bin and version-<board>.txt:
-      # keep these names stable. The merged image is for a first flash at 0x0.
+      # Short names, so they read well on the release page:
+      #   <board>-full.bin     complete image (bootloader + partitions + app), flash at 0x0
+      #   <board>-ota.bin      app only, downloaded by the device for OTA
+      #   <board>-version.txt  checked by the device before downloading
+      # The firmware builds its OTA links from these names: keep them stable.
       - name: Package firmware
         env:
           VERSION: ${{ needs.version.outputs.version }}
@@ -146,11 +149,9 @@ jobs:
         run: |
           OUT="release/$BOARD"
           mkdir -p "$OUT"
-          cp "build/$SKETCH.ino.bin"            "$OUT/$SKETCH-$BOARD.bin"
-          cp "build/$SKETCH.ino.merged.bin"     "$OUT/$SKETCH-$BOARD-merged.bin"
-          cp "build/$SKETCH.ino.bootloader.bin" "$OUT/bootloader-$BOARD.bin"
-          cp "build/$SKETCH.ino.partitions.bin" "$OUT/partitions-$BOARD.bin"
-          printf "%s\n" "$VERSION" > "$OUT/version-$BOARD.txt"
+          cp "build/$SKETCH.ino.merged.bin" "$OUT/$BOARD-full.bin"
+          cp "build/$SKETCH.ino.bin"        "$OUT/$BOARD-ota.bin"
+          printf "%s\n" "$VERSION" > "$OUT/$BOARD-version.txt"
           ls -l "$OUT"
 
       - name: Upload build artifact
@@ -179,7 +180,7 @@ jobs:
       - name: Collect release files
         run: |
           mkdir -p publish
-          find release -type f \( -name "*.bin" -o -name "version-*.txt" \) -exec cp {} publish/ \;
+          find release -type f \( -name "*.bin" -o -name "*-version.txt" \) -exec cp {} publish/ \;
           ls -l publish
 
       - name: Create GitHub release
