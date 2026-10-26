@@ -35,7 +35,7 @@ const char* OTA_REPO_BASE = "https://github.com/VoIPshare/ESP32_ePaper_GoogleCal
 const char* DEFAULT_DEVICE_TZ = "EST5EDT,M3.2.0/2,M11.1.0/2";
 
 #ifndef FW_VERSION
-#define FW_VERSION "0.2.1"
+#define FW_VERSION "0.2.2"
 #endif
 #define uS_TO_S_FACTOR 1000000ULL
 
