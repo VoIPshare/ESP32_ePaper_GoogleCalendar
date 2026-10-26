@@ -1,19 +1,69 @@
 name: Build Firmware
 
+# Push / pull request: compile check only.
+# Run manually ("Run workflow"):
+#   - on main, with a plain FW_VERSION ("0.2.0"): stable release, installed by OTA;
+#   - on any branch, with a pre-release FW_VERSION ("0.2.0-beta.1"): GitHub pre-release,
+#     never marked "latest", so OTA ignores it and testers flash it by hand.
 on:
+  push:
+    branches: [main, beta]
+    paths-ignore: ["**.md", "icons/**", ".gitignore"]
+  pull_request:
+    paths-ignore: ["**.md", "icons/**", ".gitignore"]
   workflow_dispatch:
-    inputs:
-      version:
-        description: Firmware version to embed and release
-        required: true
-        default: "0.1.1"
 
-permissions:
-  contents: write
+concurrency:
+  group: firmware-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ESP32_CORE_VERSION: 3.3.12
+  ARDUINO_CLI_VERSION: 1.5.1
+  SKETCH: ESP32_ePaper_GoogleCalendar
 
 jobs:
+  # --------------------------------------------------
+  # Read FW_VERSION from the sketch, refuse a version already released
+  # --------------------------------------------------
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+      prerelease: ${{ steps.read.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Read firmware version
+        id: read
+        run: |
+          VERSION=$(sed -n 's/^#define FW_VERSION *"\([^"]*\)".*/\1/p' "$SKETCH.ino" | head -n 1)
+          if ! [[ "$VERSION" =~ ^[0-9A-Za-z._-]+$ ]]; then
+            echo "::error::Could not read FW_VERSION from $SKETCH.ino (got '$VERSION')"
+            exit 1
+          fi
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && \
+             git rev-parse -q --verify "refs/tags/firmware-$VERSION" >/dev/null; then
+            echo "::error::firmware-$VERSION is already released: bump FW_VERSION in $SKETCH.ino"
+            exit 1
+          fi
+          PRERELEASE=false
+          case "$VERSION" in *-*) PRERELEASE=true ;; esac
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "$PRERELEASE" = false ] && \
+             [ "${{ github.ref }}" != "refs/heads/main" ]; then
+            echo "::error::Stable versions are released from main only. For a beta, use FW_VERSION like $VERSION-beta.1"
+            exit 1
+          fi
+          echo "Firmware version $VERSION (pre-release: $PRERELEASE)"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
+
   build:
-    runs-on: ubuntu-latest
+    needs: version
+    runs-on: ubuntu-24.04
 
     strategy:
       fail-fast: false
@@ -21,44 +71,46 @@ jobs:
         include:
           - name: esp32
             fqbn: esp32:esp32:esp32
-            build-dir: build_esp32
+            board-options: PartitionScheme=default
           - name: esp32c6
             fqbn: esp32:esp32:esp32c6
-            build-dir: build_esp32c6
+            board-options: PartitionScheme=default,CDCOnBoot=cdc
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Cache Arduino packages
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.arduino15/packages
             ~/.arduino15/staging
             ~/Arduino/libraries
-          key: arduino-${{ runner.os }}-esp32-3_3_7-mycal-v1
-          restore-keys: |
-            arduino-${{ runner.os }}-esp32-3_3_7-mycal-
-            arduino-${{ runner.os }}-esp32-
+          # Bump the version list here together with the installs below.
+          key: arduino-${{ runner.os }}-esp32-${{ env.ESP32_CORE_VERSION }}-gxepd2-1.6.9-gfx-1.12.6-busio-1.17.4-json-7.4.3
 
+      # arduino/setup-arduino-cli still runs on Node.js 20: use the official install script.
       - name: Setup Arduino CLI
-        uses: arduino/setup-arduino-cli@v2
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh \
+            | BINDIR="$HOME/.local/bin" sh -s "$ARDUINO_CLI_VERSION"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Install ESP32 core
         run: |
-          arduino-cli config init
+          arduino-cli config init --overwrite
           arduino-cli config add board_manager.additional_urls \
             https://espressif.github.io/arduino-esp32/package_esp32_index.json
           arduino-cli core update-index
-          arduino-cli core install esp32:esp32@3.3.7
+          arduino-cli core install esp32:esp32@${{ env.ESP32_CORE_VERSION }}
 
       - name: Install libraries
         run: |
           arduino-cli lib install \
-            "Adafruit GFX Library@1.12.5" \
+            "Adafruit GFX Library@1.12.6" \
             "Adafruit BusIO@1.17.4" \
-            "GxEPD2@1.6.8" \
+            "GxEPD2@1.6.9" \
             "ArduinoJson@7.4.3"
 
       - name: Patch GxEPD2 for ESP32
@@ -72,61 +124,71 @@ jobs:
           sed -i 's/SPI_BITORDER_MSBFIRST = SPI_MSBFIRST/SPI_BITORDER_MSBFIRST = MSBFIRST/' "$FILE"
           sed -i 's/SPI_BITORDER_LSBFIRST = SPI_LSBFIRST/SPI_BITORDER_LSBFIRST = LSBFIRST/' "$FILE"
 
+      # The "default" partition scheme keeps two app slots, which GitHub OTA needs.
       - name: Compile sketch
-        env:
-          VERSION: ${{ github.event.inputs.version }}
         run: |
           arduino-cli compile \
             --fqbn "${{ matrix.fqbn }}" \
-            --board-options "PartitionScheme=default" \
-            --build-property compiler.cpp.extra_flags="-DFW_VERSION=\"$VERSION\"" \
+            --board-options "${{ matrix.board-options }}" \
+            --warnings default \
             --export-binaries \
-            --output-dir "${{ matrix.build-dir }}" \
-            ./ESP32_ePaper_GoogleCalendar.ino
+            --output-dir build \
+            "./$SKETCH.ino" | tee compile.log
+          echo "### ${{ matrix.name }}" >> "$GITHUB_STEP_SUMMARY"
+          grep -E "Sketch uses|Global variables" compile.log >> "$GITHUB_STEP_SUMMARY" || true
 
+      # OTA downloads ESP32_ePaper_GoogleCalendar-<board>.bin and version-<board>.txt:
+      # keep these names stable. The merged image is for a first flash at 0x0.
       - name: Package firmware
         env:
-          VERSION: ${{ github.event.inputs.version }}
+          VERSION: ${{ needs.version.outputs.version }}
+          BOARD: ${{ matrix.name }}
         run: |
-          mkdir -p release/${{ matrix.name }}
-          cp "${{ matrix.build-dir }}"/*.bin "release/${{ matrix.name }}/"
-          BOOTLOADER="$(find release/${{ matrix.name }} -name '*bootloader*.bin' | head -n 1)"
-          PARTITIONS="$(find release/${{ matrix.name }} -name '*partitions*.bin' | head -n 1)"
-          FIRMWARE="$(find release/${{ matrix.name }} -name '*.ino.bin' | head -n 1)"
-          if [ -n "$BOOTLOADER" ]; then mv "$BOOTLOADER" "release/${{ matrix.name }}/bootloader-${{ matrix.name }}.bin"; fi
-          if [ -n "$PARTITIONS" ]; then mv "$PARTITIONS" "release/${{ matrix.name }}/partitions-${{ matrix.name }}.bin"; fi
-          if [ -n "$FIRMWARE" ]; then mv "$FIRMWARE" "release/${{ matrix.name }}/ESP32_ePaper_GoogleCalendar-${{ matrix.name }}.bin"; fi
-          printf "%s\n" "$VERSION" > "release/${{ matrix.name }}/version-${{ matrix.name }}.txt"
+          OUT="release/$BOARD"
+          mkdir -p "$OUT"
+          cp "build/$SKETCH.ino.bin"            "$OUT/$SKETCH-$BOARD.bin"
+          cp "build/$SKETCH.ino.merged.bin"     "$OUT/$SKETCH-$BOARD-merged.bin"
+          cp "build/$SKETCH.ino.bootloader.bin" "$OUT/bootloader-$BOARD.bin"
+          cp "build/$SKETCH.ino.partitions.bin" "$OUT/partitions-$BOARD.bin"
+          printf "%s\n" "$VERSION" > "$OUT/version-$BOARD.txt"
+          ls -l "$OUT"
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: firmware-${{ matrix.name }}
           path: release/${{ matrix.name }}
-          retention-days: 365
+          retention-days: 90
 
+  # --------------------------------------------------
+  # Release only on a manual run, after ALL builds succeeded
+  # --------------------------------------------------
   release:
-    needs: build
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
+    needs: [version, build]
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'workflow_dispatch'
     permissions:
       contents: write
 
     steps:
       - name: Download firmware artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: release
 
       - name: Collect release files
         run: |
           mkdir -p publish
-          find release -type f \( -name "*.bin" -o -name "version.txt" \) -exec cp {} publish/ \;
-          find release -type f -name "version-*.txt" -exec cp {} publish/ \;
+          find release -type f \( -name "*.bin" -o -name "version-*.txt" \) -exec cp {} publish/ \;
+          ls -l publish
 
       - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
-          tag_name: firmware-${{ github.event.inputs.version }}
-          name: ESP32 ePaper Google Calendar ${{ github.event.inputs.version }}
+          tag_name: firmware-${{ needs.version.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          name: ESP32 ePaper Google Calendar ${{ needs.version.outputs.version }}
+          generate_release_notes: true
+          prerelease: ${{ needs.version.outputs.prerelease == 'true' }}
+          make_latest: ${{ needs.version.outputs.prerelease == 'true' && 'false' || 'true' }}
           files: publish/*

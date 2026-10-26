@@ -1,3 +1,7 @@
+#pragma once
+#include "calendar.h"
+#include "weather.h"
+
 // ===================
 // FUNCTIONS
 // ===================
@@ -5,10 +9,9 @@
 struct DeviceConfig {
   String wifiSsid;
   String wifiPass;
-  String city;
-  String country;
+  String weatherLocation;          // "City", "City, CC" or "lat,lon"
+  String icsUrls[ICS_MAX_FEEDS];   // iCal feeds, merged
   String timezone;
-  String googleScriptId;
   String otaVersionUrl;
   String otaFirmwareUrl;
   String boardProfile;
@@ -24,28 +27,15 @@ struct DeviceConfig {
   int batPin;
 };
 
-struct CalendarEvent {
-  String title;
-  String start;
-  String end;
-  bool allDay;
-};
-
-struct DayForecast {
-  float minTemp =  999;
-  float maxTemp = -999;
-  String icon;
-  bool valid = false;
-};
-
 void connectWiFi();
 void initTime();
 void drawUI();
 void drawTopBar();
 void drawCalendar();
-void drawForecast(int, int, uint16_t);
+void drawForecast(int, int);
 void loadConfig();
 bool isConfigComplete();
+bool hasIcsFeeds();
 void applyBoardProfile(const String&, bool);
 bool isKnownBoardProfile(const String&);
 void initDisplayHardware();
@@ -58,28 +48,18 @@ void drawConfigNeededScreen(const char* apName, const IPAddress& ip);
 String buildConfigPage();
 String buildBoardProfileOptions();
 String buildSleepOptions();
-String urlEncode(const String&);
 void handleConfigRoot();
 void handleConfigSave();
 void setConfiguredTimezone();
-bool parseIsoUtc(const String&, time_t&);
-String formatEventDateTimeLocal(const String&, bool, const String&);
+String formatEventTime(const CalendarEvent&, const struct tm&);
 
-int dayIndex(time_t) ;
-int dayIndexWithOffset(time_t, int);
-void extractTodayTomorrow(JsonDocument& ,DayForecast& , DayForecast& ,int );
-bool fetchForecast(DayForecast&, DayForecast&, DayForecast&);
-bool fetchCoordinates(float&, float&);
 int compareVersions(const String& , const String& );
 void checkForOTA();
 
-bool fetchCalendarData(const char* ,int [],int &,CalendarEvent [],int &);
-
-const uint8_t*  getWeatherIconFromOW(const String& );
-
-uint16_t getWeatherIconColor(const String& );
+const uint8_t*  getWeatherIcon(int);
+uint16_t getWeatherIconColor(int);
 void drawIcon(int , int ,int , int ,const uint8_t* ,const uint16_t );
-int drawWrappedText(int ,int ,int ,const String &,int );
+int drawWrappedText(int ,int ,int ,const String &,int, int );
 String utf8ToLatin1(const String& );
 float readBatteryVoltageAvg(int );
 void drawStatus();

@@ -6,6 +6,7 @@
 #include <HTTPUpdate.h>
 #include <ArduinoJson.h>
 #include <WebServer.h>
+#include <DNSServer.h>
 #include <Preferences.h>
 
 #include <GxEPD2_4C.h>
@@ -34,7 +35,7 @@ const char* OTA_REPO_BASE = "https://github.com/VoIPshare/ESP32_ePaper_GoogleCal
 const char* DEFAULT_DEVICE_TZ = "EST5EDT,M3.2.0/2,M11.1.0/2";
 
 #ifndef FW_VERSION
-#define FW_VERSION "0.1.1"
+#define FW_VERSION "0.2.0-beta.1"
 #endif
 #define uS_TO_S_FACTOR 1000000ULL
 
@@ -46,19 +47,21 @@ DisplayType* displayHandle = nullptr;
 #define display (*displayHandle)
 
 
-#define MAX_DAYS   31
-#define MAX_EVENTS 10
+CalendarData cal;
+bool calendarOk = false;
+int calendarFailedFeeds = 0;
 
-int daysWithEvents[MAX_DAYS];
-int daysCount = 0;
+DayForecast forecast[FORECAST_DAYS];
+bool weatherOk = false;
 
-CalendarEvent events[MAX_EVENTS];
-int eventCount = 0;
 bool timeSynced = false;
 DeviceConfig config;
 bool hasStoredConfig = false;
 WebServer server(80);
+DNSServer dnsServer;
 Preferences preferences;
+
+static const char* const ICS_PREF_KEYS[ICS_MAX_FEEDS] = { "ics_url", "ics_url2", "ics_url3" };
 RTC_DATA_ATTR uint32_t lastOtaCheckEpoch = 0;
 
 // ===================
@@ -92,22 +95,15 @@ void setup()
     checkForOTA();
   }
 
-  char calendarURL[256];
-  snprintf(calendarURL, sizeof(calendarURL), "https://script.google.com/macros/s/%s/exec", config.googleScriptId.c_str());
+  // Everything is fetched in this single wake, then WiFi goes off before the
+  // (slow) display refresh, so the radio is on as briefly as possible.
+  calendarOk = fetchCalendarIcs(config.icsUrls, ICS_MAX_FEEDS, cal, &calendarFailedFeeds);
+  weatherOk = fetchForecast(config.weatherLocation, forecast, FORECAST_DAYS);
 
-  if (fetchCalendarData(
-        calendarURL,
-        daysWithEvents,
-        daysCount,
-        events,
-        eventCount)) {
-  }
-
-  drawUI();
-
-  // Optional: turn WiFi off to save RAM + power
   WiFi.disconnect(true);
   WiFi.mode(WIFI_OFF);
+
+  drawUI();
 
   display.hibernate();
 
@@ -159,17 +155,26 @@ void loadConfig()
   hasStoredConfig =
     preferences.isKey("wifi_ssid") ||
     preferences.isKey("wifi_pass") ||
+    preferences.isKey("weather_loc") ||
+    preferences.isKey("ics_url") ||
     preferences.isKey("city") ||
-    preferences.isKey("country") ||
-    preferences.isKey("google_id") ||
     preferences.isKey("board_profile");
 
   config.wifiSsid = preferences.getString("wifi_ssid", "");
   config.wifiPass = preferences.getString("wifi_pass", "");
-  config.city = preferences.getString("city", "");
-  config.country = preferences.getString("country", "");
+  config.weatherLocation = preferences.getString("weather_loc", "");
+  if (!config.weatherLocation.length()) {
+    // Settings saved by older firmware: separate city and country code fields.
+    String city = preferences.getString("city", "");
+    String country = preferences.getString("country", "");
+    city.trim();
+    country.trim();
+    config.weatherLocation = country.length() == 2 ? city + ", " + country : city;
+  }
+  for (int i = 0; i < ICS_MAX_FEEDS; i++) {
+    config.icsUrls[i] = preferences.getString(ICS_PREF_KEYS[i], "");
+  }
   config.timezone = preferences.getString("timezone", DEFAULT_DEVICE_TZ);
-  config.googleScriptId = preferences.getString("google_id", "");
   config.otaVersionUrl = preferences.getString("ota_ver", "");
   config.otaFirmwareUrl = preferences.getString("ota_fw", "");
   config.boardProfile = preferences.getString("board_profile", "esp32-waveshare");
@@ -290,15 +295,21 @@ String defaultOtaFirmwareUrl()
   return String(OTA_REPO_BASE) + "/ESP32_ePaper_GoogleCalendar-esp32.bin";
 }
 
+bool hasIcsFeeds()
+{
+  for (int i = 0; i < ICS_MAX_FEEDS; i++) {
+    if (config.icsUrls[i].length()) return true;
+  }
+  return false;
+}
+
 bool isConfigComplete()
 {
   return
     hasStoredConfig &&
     config.wifiSsid.length() &&
-    config.wifiPass.length() &&
-    config.city.length() &&
-    config.country.length() &&
-    config.googleScriptId.length();
+    config.weatherLocation.length() &&
+    hasIcsFeeds();
 }
 
 String htmlEscape(const String& input)
@@ -313,27 +324,6 @@ String htmlEscape(const String& input)
     else if (c == '"') out += F("&quot;");
     else if (c == '\'') out += F("&#39;");
     else out += c;
-  }
-  return out;
-}
-
-String urlEncode(const String& input)
-{
-  String out;
-  out.reserve(input.length() * 3);
-  for (size_t i = 0; i < input.length(); ++i) {
-    uint8_t c = input[i];
-    if ((c >= 'a' && c <= 'z') ||
-        (c >= 'A' && c <= 'Z') ||
-        (c >= '0' && c <= '9') ||
-        c == '-' || c == '_' || c == '.' || c == '~') {
-      out += char(c);
-      continue;
-    }
-
-    char encoded[4];
-    snprintf(encoded, sizeof(encoded), "%%%02X", c);
-    out += encoded;
   }
   return out;
 }
@@ -465,8 +455,8 @@ function applyProfile() {
 </select>
 <button type="button" onclick="location.reload()">Rescan WiFi</button>
 <label for="wifi_pass">WiFi password</label>
-<input id="wifi_pass" name="wifi_pass" value=")rawliteral";
-  html += htmlEscape(config.wifiPass);
+<input id="wifi_pass" name="wifi_pass" type="password" placeholder=")rawliteral";
+  html += config.wifiPass.length() ? "Leave empty to keep the saved password" : "WiFi password";
   html += R"rawliteral(">
 <label for="sleep_hours">Refresh interval</label>
 <select id="sleep_hours" name="sleep_hours">
@@ -506,23 +496,27 @@ function applyProfile() {
   html += String(config.batPin);
   html += R"rawliteral("></div>
 </div>
-<label for="google_id">Google Script ID</label>
-<input id="google_id" name="google_id" value=")rawliteral";
-  html += htmlEscape(config.googleScriptId);
-  html += R"rawliteral(">
-<label for="city">City for Open-Meteo geocoding</label>
-<input id="city" name="city" value=")rawliteral";
-  html += htmlEscape(config.city);
-  html += R"rawliteral(">
-<label for="country">Country code</label>
-<input id="country" name="country" value=")rawliteral";
-  html += htmlEscape(config.country);
-  html += R"rawliteral(">
+<label>Calendar iCal URLs (up to 3, merged)</label>
+)rawliteral";
+  for (int i = 0; i < ICS_MAX_FEEDS; i++) {
+    html += "<input name=\"";
+    html += ICS_PREF_KEYS[i];
+    html += "\" value=\"";
+    html += htmlEscape(config.icsUrls[i]);
+    html += "\" placeholder=\"https://calendar.google.com/calendar/ical/.../basic.ics\" style=\"margin-bottom:8px\">\n";
+  }
+  html += R"rawliteral(
+<div class="note">Google Calendar: Settings &rarr; your calendar &rarr; Integrate calendar &rarr; public or secret address in iCal format. Any other .ics link (Outlook, iCloud, Nextcloud) works too.</div>
+<label for="weather_location">Weather location</label>
+<input id="weather_location" name="weather_location" value=")rawliteral";
+  html += htmlEscape(config.weatherLocation);
+  html += R"rawliteral(" placeholder="London, GB   or   51.51,-0.13">
+<div class="note">City name (optionally followed by a 2-letter country code) or latitude,longitude. Forecast from Open-Meteo, no API key needed.</div>
 <label for="timezone">Timezone (POSIX TZ string)</label>
 <input id="timezone" name="timezone" value=")rawliteral";
   html += htmlEscape(config.timezone);
-  html += R"rawliteral(">
-<div class="note">Example: EST5EDT,M3.2.0/2,M11.1.0/2</div>
+  html += R"rawliteral(" placeholder="EST5EDT,M3.2.0/2,M11.1.0/2">
+<div class="note">Examples: EST5EDT,M3.2.0/2,M11.1.0/2 (US Eastern), CET-1CEST,M3.5.0,M10.5.0/3 (Central Europe), GMT0BST,M3.5.0/1,M10.5.0 (UK).</div>
 <label><input type="checkbox" name="ota_enabled" )rawliteral";
   html += config.otaEnabled ? "checked" : "";
   html += R"rawliteral(> Check GitHub updates every 12 hours from VoIPshare/ESP32_ePaper_GoogleCalendar</label>
@@ -545,13 +539,20 @@ void handleConfigRoot()
 void handleConfigSave()
 {
   config.wifiSsid = server.arg("wifi_ssid");
-  config.wifiPass = server.arg("wifi_pass");
+  // An empty password keeps the saved one, so reopening setup doesn't require retyping it.
+  if (server.arg("wifi_pass").length() > 0) {
+    config.wifiPass = server.arg("wifi_pass");
+  }
   config.sleepHours = server.arg("sleep_hours").toInt();
   config.boardProfile = server.arg("board_profile");
-  config.googleScriptId = server.arg("google_id");
-  config.city = server.arg("city");
-  config.country = server.arg("country");
+  for (int i = 0; i < ICS_MAX_FEEDS; i++) {
+    config.icsUrls[i] = server.arg(ICS_PREF_KEYS[i]);
+    config.icsUrls[i].trim();
+  }
+  config.weatherLocation = server.arg("weather_location");
+  config.weatherLocation.trim();
   config.timezone = server.arg("timezone");
+  config.timezone.trim();
   config.otaEnabled = server.hasArg("ota_enabled");
   config.epdCs = server.arg("epd_cs").toInt();
   config.epdDc = server.arg("epd_dc").toInt();
@@ -577,10 +578,15 @@ void handleConfigSave()
   preferences.putString("wifi_pass", config.wifiPass);
   preferences.putInt("sleep_hours", config.sleepHours);
   preferences.putString("board_profile", config.boardProfile);
-  preferences.putString("google_id", config.googleScriptId);
-  preferences.putString("city", config.city);
-  preferences.putString("country", config.country);
+  for (int i = 0; i < ICS_MAX_FEEDS; i++) {
+    preferences.putString(ICS_PREF_KEYS[i], config.icsUrls[i]);
+  }
+  preferences.putString("weather_loc", config.weatherLocation);
   preferences.putString("timezone", config.timezone);
+  // Settings of older firmware, replaced by the iCal links and weather_loc.
+  preferences.remove("google_id");
+  preferences.remove("city");
+  preferences.remove("country");
   preferences.putBool("ota_enabled", config.otaEnabled);
   preferences.putString("ota_ver", config.otaVersionUrl);
   preferences.putString("ota_fw", config.otaFirmwareUrl);
@@ -635,13 +641,23 @@ void startConfigPortal()
   Serial.print("AP IP: ");
   Serial.println(ip);
 
+  // Captive portal: answer every DNS lookup with our IP so phones/laptops pop up the setup page.
+  dnsServer.start(53, "*", ip);
+
   server.on("/", handleConfigRoot);
   server.on("/save", HTTP_POST, handleConfigSave);
+  // OS connectivity checks (Android /generate_204, Apple /hotspot-detect.html, Windows /connecttest.txt)
+  // and any other URL get redirected to the setup page.
+  server.onNotFound([]() {
+    server.sendHeader("Location", String("http://") + WiFi.softAPIP().toString() + "/", true);
+    server.send(302, "text/plain", "");
+  });
   server.begin();
 
   drawConfigNeededScreen(AP_NAME, ip);
 
   while (true) {
+    dnsServer.processNextRequest();
     server.handleClient();
     delay(10);
   }
@@ -672,7 +688,7 @@ void drawUI()
     display.fillScreen(GxEPD_WHITE);
     drawTopBar();
     drawCalendar();
-    drawForecast(2, 5, GxEPD_BLACK);  // Example color
+    drawForecast(2, 5);
     drawStatus();
   } while (display.nextPage());
 }
@@ -703,90 +719,28 @@ void setConfiguredTimezone() {
 
 
 bool hasEventOnDay(int day) {
-  for (int i = 0; i < daysCount; i++) {
-    if (daysWithEvents[i] == day) return true;
+  for (int i = 0; i < cal.daysCount; i++) {
+    if (cal.daysWithEvents[i] == day) return true;
   }
   return false;
 }
 
-bool parseIsoUtc(const String& iso, time_t& outEpoch) {
-  int year, month, day, hour, minute, second;
-  second = 0;
-
-  int matched = sscanf(
-    iso.c_str(),
-    "%d-%d-%dT%d:%d:%d",
-    &year, &month, &day, &hour, &minute, &second
-  );
-
-  if (matched < 5) {
-    return false;
-  }
-
-  struct tm tmUtc = {};
-  tmUtc.tm_year = year - 1900;
-  tmUtc.tm_mon = month - 1;
-  tmUtc.tm_mday = day;
-  tmUtc.tm_hour = hour;
-  tmUtc.tm_min = minute;
-  tmUtc.tm_sec = second;
-
-  char* previousTz = getenv("TZ");
-  String previousTzValue = previousTz ? String(previousTz) : String("");
-
-  setenv("TZ", "UTC0", 1);
-  tzset();
-  outEpoch = mktime(&tmUtc);
-
-  if (previousTzValue.length()) {
-    setenv("TZ", previousTzValue.c_str(), 1);
-  } else {
-    unsetenv("TZ");
-  }
-  tzset();
-
-  return outEpoch != (time_t)-1;
-}
-
-String formatEventDateTimeLocal(const String &iso, bool includeEnd=false, const String &endIso="") {
-  time_t startEpoch;
-  if (!parseIsoUtc(iso, startEpoch)) {
-    return includeEnd ? String("--:--") : String("-- --:--");
-  }
-
-  struct tm startLocal;
-  localtime_r(&startEpoch, &startLocal);
+// "14:00-15:30", "All day"; events starting on a later day get a "Tmrw" prefix.
+String formatEventTime(const CalendarEvent& ev, const struct tm& today)
+{
+  struct tm s, e;
+  localtime_r(&ev.start, &s);
+  localtime_r(&ev.end, &e);
+  bool later = s.tm_year > today.tm_year ||
+               (s.tm_year == today.tm_year && s.tm_yday > today.tm_yday);
 
   char buf[32];
-  if (!includeEnd) {
-    snprintf(
-      buf,
-      sizeof(buf),
-      "%02d %02d:%02d",
-      startLocal.tm_mday,
-      startLocal.tm_hour,
-      startLocal.tm_min
-    );
+  if (ev.allDay) {
+    snprintf(buf, sizeof(buf), "%s", later ? "Tmrw" : "All day");
   } else {
-    time_t endEpoch;
-    if (!parseIsoUtc(endIso, endEpoch)) {
-      snprintf(buf, sizeof(buf), "%02d:%02d", startLocal.tm_hour, startLocal.tm_min);
-      return String(buf);
-    }
-
-    struct tm endLocal;
-    localtime_r(&endEpoch, &endLocal);
-    snprintf(
-      buf,
-      sizeof(buf),
-      "%02d:%02d-%02d:%02d",
-      startLocal.tm_hour,
-      startLocal.tm_min,
-      endLocal.tm_hour,
-      endLocal.tm_min
-    );
+    snprintf(buf, sizeof(buf), "%s%02d:%02d-%02d:%02d",
+             later ? "Tmrw " : "", s.tm_hour, s.tm_min, e.tm_hour, e.tm_min);
   }
-
   return String(buf);
 }
 
@@ -845,9 +799,7 @@ void drawCalendar()
   // -----------------------------
   // Days in month
   // -----------------------------
-  int daysInMonth = 31;
-  if (month == 2) daysInMonth = (year % 4 == 0) ? 29 : 28;
-  if (month == 4 || month == 6 || month == 9 || month == 11) daysInMonth = 30;
+  int monthDays = daysInMonth(year, month);
 
   int rowHeight = 56;
 
@@ -856,7 +808,7 @@ void drawCalendar()
   // -----------------------------
   display.setFont(&Bangers_Regular18pt7b);
 
-  for (int d = 1; d <= daysInMonth; d++) {
+  for (int d = 1; d <= monthDays; d++) {
     int x = CAL_X + col * colWidth + 10;
     int yy = y + row * rowHeight;
 
@@ -906,110 +858,62 @@ void drawCalendar()
   // -----------------------------
   // Next 24h events list
   // -----------------------------
+  // Time in red, title in black.
   int listX = CAL_X + CAL_W + 20;
   int listY = CAL_Y + 40;
-  int maxWidth = 380;
+  int maxWidth = SCREEN_W - listX - 15;
   int lineHeight = 30;
-  display.setTextColor(GxEPD_BLACK);
+  int listBottom = SCREEN_H - 45;   // keep clear of the status line
   display.setFont(&Geologica_Bold14pt8b);
 
-  if (eventCount == 0) {
+  if (!calendarOk) {
+    display.setTextColor(GxEPD_RED);
+    display.setCursor(listX, listY);
+    display.print("Calendar unavailable");
+  } else if (cal.eventCount == 0) {
+    display.setTextColor(GxEPD_BLACK);
     display.setCursor(listX, listY);
     display.print("No events in the next 24h");
   } else {
-    for (int i = 0; i < eventCount && i < 5; i++) {
-      String when = events[i].allDay
-        ? String("All day")
-        : formatEventDateTimeLocal(events[i].start, true, events[i].end);
+    int shown = 0;
+    for (int i = 0; i < cal.eventCount && listY <= listBottom; i++, shown++) {
+      String when = formatEventTime(cal.events[i], timeinfo);
 
-      String line = utf8ToLatin1(when + " " + events[i].title);
+      display.setTextColor(GxEPD_RED);
+      display.setCursor(listX, listY);
+      display.print(when);
+      display.getTextBounds(when + " ", 0, 0, &tbx, &tby, &tbw, &tbh);
+
+      display.setTextColor(GxEPD_BLACK);
       listY = drawWrappedText(
         listX,
         listY,
         maxWidth,
-        line,
-        lineHeight
+        utf8ToLatin1(String(cal.events[i].title)),
+        lineHeight,
+        tbw
       );
 
       listY += lineHeight / 2;
     }
+
+    if (shown < cal.eventCount) {
+      char more[24];
+      snprintf(more, sizeof(more), "+%d more", cal.eventCount - shown);
+      display.setTextColor(GxEPD_RED);
+      display.setCursor(listX, min(listY, SCREEN_H - 30));
+      display.print(more);
+    }
   }
+  display.setTextColor(GxEPD_BLACK);
 }
 
-// // ===================
-// // EVENTS (RIGHT)
-// // ===================
-
-
-bool fetchCalendarData(
-  const char* url,
-  int daysWithEvents[],
-  int &daysCount,
-  CalendarEvent events[],
-  int &eventCount
-) {
-  HTTPClient http;
-  http.begin(url);
-  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-
-  int httpCode = http.GET();
-  if (httpCode != HTTP_CODE_OK) {
-    Serial.printf("HTTP error: %d\n", httpCode);
-    http.end();
-    return false;
-  }
-  Serial.println("READING");
-  String payload = http.getString();
-  // Serial.println( payload );
-  http.end();
-
-  // Adjust size if needed
-  StaticJsonDocument<4096> doc;
-  DeserializationError error = deserializeJson(doc, payload);
-  if (error) {
-    Serial.println("JSON parse failed");
-    return false;
-  }
-
-  // -----------------------------
-  // Days with events
-  // -----------------------------
-  daysCount = 0;
-  JsonArray days = doc["daysWithEvents"];
-  for (int d : days) {
-    if (daysCount >= MAX_DAYS) {
-      break;
-    }
-    daysWithEvents[daysCount++] = d;
-  }
-
-  // -----------------------------
-  // Events next 24h
-  // -----------------------------
-  eventCount = 0;
-  JsonArray evts = doc["next24hEvents"];
-  for (JsonObject e : evts) {
-    if (eventCount >= MAX_EVENTS) {
-      break;
-    }
-    events[eventCount].title = e["title"].as<String>();
-    events[eventCount].start = e["start"].as<String>();
-    events[eventCount].end   = e["end"].as<String>();
-    events[eventCount].allDay = e["allDay"];
-    eventCount++;
-  }
-  return true;
-}
-
-void drawForecast(int x, int y, uint16_t color) {
-    DayForecast today, tomorrow, dayAfterTomorrow;
-    // const char* labels[] = {"Today", "Tomorrow", "+2"};
-    DayForecast* forecasts[] = {&today, &tomorrow, &dayAfterTomorrow};
+void drawForecast(int x, int y) {
     const int blockWidth = 180;
 
     display.setFont(&Geologica_Bold14pt8b);
 
-    if (!fetchForecast(today, tomorrow, dayAfterTomorrow)) {
+    if (!weatherOk) {
         display.setTextColor(GxEPD_RED);
         display.setCursor(x, y + 32);
         display.print("Weather unavailable");
@@ -1017,25 +921,25 @@ void drawForecast(int x, int y, uint16_t color) {
         return;
     }
 
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < FORECAST_DAYS; ++i) {
         int blockX = x + (i * blockWidth);
-        // display.setCursor(blockX, y + 12);
-        // display.print(labels[i]);
 
-        if (forecasts[i]->valid) {
+        if (forecast[i].valid) {
             drawIcon(
                 blockX, y,
                 48, 48,
-                getWeatherIconFromOW(forecasts[i]->icon),
-                getWeatherIconColor(forecasts[i]->icon)
+                getWeatherIcon(forecast[i].code),
+                getWeatherIconColor(forecast[i].code)
             );
 
             String tempText = utf8ToLatin1(
-                String((int)forecasts[i]->minTemp) + "° / " + String((int)forecasts[i]->maxTemp) + "°"
+                String((int)lroundf(forecast[i].minTemp)) + "° / " + String((int)lroundf(forecast[i].maxTemp)) + "°"
             );
+            display.setTextColor(GxEPD_BLACK);
             display.setCursor(blockX + 55, y + 30);
             display.print(tempText);
         } else {
+            display.setTextColor(GxEPD_BLACK);
             display.setCursor(blockX, y + 30);
             display.print("No forecast");
         }
@@ -1043,149 +947,27 @@ void drawForecast(int x, int y, uint16_t color) {
 }
 
 
-bool fetchForecast(DayForecast& today, DayForecast& tomorrow, DayForecast& dayAfterTomorrow) {
-    bool status = false;
-    float latitude = 0.0f;
-    float longitude = 0.0f;
-    if (!fetchCoordinates(latitude, longitude)) {
-        return false;
-    }
-
-    char forecastURL[384];
-    snprintf(
-        forecastURL,
-        sizeof(forecastURL),
-        "https://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f&daily=temperature_2m_max,temperature_2m_min,weather_code&forecast_days=3&timezone=auto",
-        latitude,
-        longitude
-    );
-
-    WiFiClientSecure client;
-    client.setInsecure(); // for testing only
-
-    HTTPClient http;
-    http.begin(client, forecastURL);
-
-    int code = http.GET();
-    Serial.print("HTTP code: "); Serial.println(code);
-
-    if(code == 200) {
-        DynamicJsonDocument doc(12000);
-        String payload = http.getString();
-        DeserializationError err = deserializeJson(doc, payload);
-        
-        if(err) {
-            Serial.print("JSON parse failed: "); Serial.println(err.c_str());
-            Serial.println(payload);
-        } else {
-            JsonArray mins = doc["daily"]["temperature_2m_min"].as<JsonArray>();
-            JsonArray maxs = doc["daily"]["temperature_2m_max"].as<JsonArray>();
-            JsonArray codes = doc["daily"]["weather_code"].as<JsonArray>();
-
-            if (mins.size() > 0 && maxs.size() > 0 && codes.size() > 0) {
-                today.minTemp = mins[0].as<float>();
-                today.maxTemp = maxs[0].as<float>();
-                today.icon = String(codes[0].as<int>());
-                today.valid = true;
-                status = true;
-            }
-
-            if (mins.size() > 1 && maxs.size() > 1 && codes.size() > 1) {
-                tomorrow.minTemp = mins[1].as<float>();
-                tomorrow.maxTemp = maxs[1].as<float>();
-                tomorrow.icon = String(codes[1].as<int>());
-                tomorrow.valid = true;
-            }
-
-            if (mins.size() > 2 && maxs.size() > 2 && codes.size() > 2) {
-                dayAfterTomorrow.minTemp = mins[2].as<float>();
-                dayAfterTomorrow.maxTemp = maxs[2].as<float>();
-                dayAfterTomorrow.icon = String(codes[2].as<int>());
-                dayAfterTomorrow.valid = true;
-            }
-        }
-    } else {
-        Serial.println("HTTP GET failed");
-    }
-    http.end();
-
-    return status;
-}
-
-bool fetchCoordinates(float& latitude, float& longitude) {
-    String city = config.city;
-    city.trim();
-    city = urlEncode(city);
-
-    String country = config.country;
-    country.trim();
-    country = urlEncode(country);
-
-    char url[384];
-    snprintf(
-        url,
-        sizeof(url),
-        "https://geocoding-api.open-meteo.com/v1/search?name=%s&count=1&language=en&format=json%s%s",
-        city.c_str(),
-        country.length() ? "&countryCode=" : "",
-        country.length() ? country.c_str() : ""
-    );
-
-    WiFiClientSecure client;
-    client.setInsecure();
-
-    HTTPClient http;
-    http.begin(client, url);
-    int code = http.GET();
-    if (code != 200) {
-        Serial.printf("Geocoding HTTP error: %d\n", code);
-        http.end();
-        return false;
-    }
-
-    DynamicJsonDocument doc(12000);
-    String payload = http.getString();
-    DeserializationError err = deserializeJson(doc, payload);
-    http.end();
-    if (err) {
-        Serial.print("Geocoding JSON parse failed: ");
-        Serial.println(err.c_str());
-        Serial.println(payload);
-        return false;
-    }
-
-    JsonArray results = doc["results"].as<JsonArray>();
-    if (results.isNull() || results.size() == 0) {
-        Serial.println("No geocoding results");
-        return false;
-    }
-
-    latitude = results[0]["latitude"].as<float>();
-    longitude = results[0]["longitude"].as<float>();
-    return true;
-}
-
-
+// Compares "1.2.3" style versions. A pre-release suffix ("0.2.0-beta.1") sorts below the
+// same version without it, so a beta tester moves on to the stable release when it is out.
+// Returns -1, 0 or 1.
 int compareVersions(const String& v1, const String& v2)
 {
+  int dash1 = v1.indexOf('-');
+  int dash2 = v2.indexOf('-');
+  String core1 = dash1 >= 0 ? v1.substring(0, dash1) : v1;
+  String core2 = dash2 >= 0 ? v2.substring(0, dash2) : v2;
+
   int i1 = 0, i2 = 0;
-
-  while (i1 < v1.length() || i2 < v2.length()) {
-
+  while (i1 < core1.length() || i2 < core2.length()) {
     long num1 = 0;
     long num2 = 0;
 
-    // Parse number from v1
-    while (i1 < v1.length() && v1[i1] != '.') {
-      if (isDigit(v1[i1]))
-        num1 = num1 * 10 + (v1[i1] - '0');
+    while (i1 < core1.length() && core1[i1] != '.') {
+      if (isDigit(core1[i1])) num1 = num1 * 10 + (core1[i1] - '0');
       i1++;
     }
-
-    // Parse number from v2
-    while (i2 < v2.length() && v2[i2] != '.') {
-      if (isDigit(v2[i2]))
-        num2 = num2 * 10 + (v2[i2] - '0');
+    while (i2 < core2.length() && core2[i2] != '.') {
+      if (isDigit(core2[i2])) num2 = num2 * 10 + (core2[i2] - '0');
       i2++;
     }
 
@@ -1197,18 +979,29 @@ int compareVersions(const String& v1, const String& v2)
     i2++;
   }
 
-  return 0; // equal
+  if (dash1 < 0 && dash2 < 0) return 0;
+  if (dash1 < 0) return 1;    // stable is newer than its pre-release
+  if (dash2 < 0) return -1;
+  int c = v1.substring(dash1 + 1).compareTo(v2.substring(dash2 + 1));
+  return c < 0 ? -1 : (c > 0 ? 1 : 0);
 }
 
 void checkForOTA() {
   if (WiFi.status() != WL_CONNECTED) return;
   if (!config.otaVersionUrl.length() || !config.otaFirmwareUrl.length()) return;
 
+  // GitHub "releases/latest/download" links redirect to the asset of the latest stable
+  // release; pre-releases (betas) are never "latest", so devices don't pick them up.
+  WiFiClientSecure client;
+  client.setInsecure();
+
   HTTPClient http;
-  http.begin(config.otaVersionUrl);
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  http.begin(client, config.otaVersionUrl);
 
   int httpCode = http.GET();
   if (httpCode != 200) {
+    Serial.printf("OTA version check: HTTP %d\n", httpCode);
     http.end();
     return;
   }
@@ -1218,16 +1011,20 @@ void checkForOTA() {
   http.end();
   lastOtaCheckEpoch = (uint32_t)time(nullptr);
 
-  if ( compareVersions(newVersion, FW_VERSION) == 0 ) {
+  if (!newVersion.length() || !isDigit(newVersion[0]) || newVersion.length() > 32) {
+    Serial.println("OTA version check: unexpected reply");
+    return;
+  }
+
+  // Only move forward: a beta build doesn't go back to an older stable release.
+  if ( compareVersions(newVersion, FW_VERSION) <= 0 ) {
     Serial.println("Firmware is up to date");
     return;
   }
 
   Serial.printf("New firmware available: %s\n", newVersion.c_str());
 
-    WiFiClientSecure client;
-    client.setInsecure(); 
-
+  httpUpdate.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   t_httpUpdate_return ret = httpUpdate.update(client, config.otaFirmwareUrl);
 
   switch (ret) {
@@ -1246,10 +1043,7 @@ void checkForOTA() {
   }
 }
 
-const uint8_t*  getWeatherIconFromOW(const String& icon) {
-  Serial.println("getWeatherIconFromOW");
-  Serial.println( icon );
-    int code = icon.toInt();
+const uint8_t* getWeatherIcon(int code) {
     if (code == 0 || code == 1) return ICON_SUNNY_48;
     if (code == 2) return ICON_PARTLYCLOUDY_48;
     if (code == 3) return ICON_CLOUDY_48;
@@ -1257,13 +1051,13 @@ const uint8_t*  getWeatherIconFromOW(const String& icon) {
     if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82)) return ICON_RAINY_48;
     if (code >= 71 && code <= 77) return ICON_SNOW_48;
     if (code >= 85 && code <= 86) return ICON_SNOW_48;
-    if (code >= 95) return ICON_RAINY_48;
+    if (code >= 95) return ICON_RAINANDTHUNDER_48;
     return ICON_SUNNY_48;
 }
 
-uint16_t getWeatherIconColor(const String& icon) {
-    int code = icon.toInt();
-    if (code == 0 || code == 1) return GxEPD_YELLOW;
+// The forecast sits on the yellow top bar, so the sun is drawn red to stay visible.
+uint16_t getWeatherIconColor(int code) {
+    if (code == 0 || code == 1) return GxEPD_RED;
     if (code >= 95) return GxEPD_RED;
     return GxEPD_BLACK;
 }
@@ -1292,66 +1086,18 @@ void drawIcon(
 }
 
 
-int dayIndexWithOffset(time_t utc, int timezoneOffset) {
-    time_t localEpoch = utc + timezoneOffset;
-    struct tm localTm;
-    gmtime_r(&localEpoch, &localTm);
-    return localTm.tm_yday;
-}
-
-void extractTodayTomorrow(JsonDocument& doc,
-                           DayForecast& today,
-                           DayForecast& tomorrow,
-                           int timezoneOffset)   // seconds
-{
-    Serial.println("ExtractTodayTomorrow");
-
-    // Convert "now" to LOCAL time
-    time_t nowUTC   = time(nullptr);
-    int todayIdx    = dayIndexWithOffset(nowUTC, timezoneOffset);
-    Serial.println(todayIdx);
-
-    for (JsonObject item : doc["list"].as<JsonArray>()) {
-
-        time_t tUTC   = item["dt"];
-        int idx       = dayIndexWithOffset(tUTC, timezoneOffset);
-
-        DayForecast* d = nullptr;
-
-        if (idx == todayIdx)            d = &today;
-        else if (idx == todayIdx + 1)   d = &tomorrow;
-        else continue;
-
-        float tmin = item["main"]["temp_min"];
-        float tmax = item["main"]["temp_max"];
-
-        d->minTemp = min(d->minTemp, tmin);
-        d->maxTemp = max(d->maxTemp, tmax);
-
-        if (!d->valid) {
-            d->icon  = item["weather"][0]["icon"].as<String>();
-            d->valid = true;
-        }
-    }
-}
-
-
-int dayIndex(time_t t) {
-    struct tm* tm = localtime(&t);
-    return tm->tm_yday;
-};
-
+// The first line starts `firstIndent` pixels to the right of x (after a label on the same line).
 int drawWrappedText(
   int x,
   int y,
   int maxWidth,
   const String &text,
-  int lineStep   // baseline-to-baseline, e.g. 22
+  int lineStep,   // baseline-to-baseline, e.g. 22
+  int firstIndent
 ) {
   String line = "";
   int cursorY = y;
-
-  display.setCursor(x, cursorY);
+  int indent = firstIndent;
 
   int i = 0;
   while (i < text.length()) {
@@ -1365,17 +1111,23 @@ int drawWrappedText(
     int16_t x1, y1;
     uint16_t w, h;
     String candidate = line.length() ? line + " " + word : word;
-    display.getTextBounds(candidate, x, cursorY, &x1, &y1, &w, &h);
+    display.getTextBounds(candidate, 0, 0, &x1, &y1, &w, &h);
 
-    if (w > maxWidth && line.length()) {
-      // print current line
-      display.print(line);
-
-      // move to next baseline
-      cursorY += lineStep;
-      display.setCursor(x, cursorY);
-
-      line = word;
+    if (w > maxWidth - indent) {
+      if (line.length()) {
+        // print current line, move to next baseline
+        display.setCursor(x + indent, cursorY);
+        display.print(line);
+        cursorY += lineStep;
+        line = word;
+      } else if (indent > 0) {
+        // not even the first word fits after the label: start below it
+        cursorY += lineStep;
+        line = word;
+      } else {
+        line = candidate;
+      }
+      indent = 0;
     } else {
       line = candidate;
     }
@@ -1385,6 +1137,7 @@ int drawWrappedText(
 
   // print last line
   if (line.length()) {
+    display.setCursor(x + indent, cursorY);
     display.print(line);
     cursorY += lineStep;
   }
@@ -1413,7 +1166,6 @@ String utf8ToLatin1(const String& s) {
         out += '?';
     }
   }
-  Serial.println(out);
   return out;
 }
 
@@ -1458,7 +1210,7 @@ void drawCenteredText(
 void drawStatus()
 {
   display.setFont(&RobotoMono_Thin7pt7b);
-  Serial.println("DrawStatus");
+  display.setTextColor(GxEPD_BLACK);
   float vbat = readBatteryVoltageAvg(6);
 
    // float temperature = 23.56;
@@ -1473,10 +1225,17 @@ void drawStatus()
   display.setCursor(5,460);
   display.print( buf );
 
+  if (calendarOk && calendarFailedFeeds > 0) {
+    snprintf(buf, sizeof(buf), "%d calendar feed%s failed", calendarFailedFeeds, calendarFailedFeeds > 1 ? "s" : "");
+    display.setTextColor(GxEPD_RED);
+    display.setCursor(90,460);
+    display.print( buf );
+    display.setTextColor(GxEPD_BLACK);
+  }
+
   struct tm t;
   setConfiguredTimezone();
   if (getLocalTime(&t)) {
-        Serial.println("Time");
         snprintf(buf, sizeof(buf),
            "Last: %04d-%02d-%02d %02d:%02d",
            t.tm_year + 1900,
