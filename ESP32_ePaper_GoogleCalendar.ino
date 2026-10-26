@@ -266,6 +266,10 @@ uint64_t sleepDurationUs()
   return (uint64_t)config.sleepHours * 3600ULL * uS_TO_S_FACTOR;
 }
 
+// Once a day. The deep sleep timer runs on an imprecise RTC clock, so a wake up to an hour
+// early still counts; otherwise a 24 h refresh interval would only check every other day.
+#define OTA_CHECK_INTERVAL_S (23UL * 3600UL)
+
 bool shouldCheckForOTA()
 {
   if (!config.otaEnabled) return false;
@@ -273,7 +277,7 @@ bool shouldCheckForOTA()
 
   uint32_t now = (uint32_t)time(nullptr);
   if (lastOtaCheckEpoch != 0 && now >= lastOtaCheckEpoch &&
-      (now - lastOtaCheckEpoch) < (12UL * 3600UL)) {
+      (now - lastOtaCheckEpoch) < OTA_CHECK_INTERVAL_S) {
     return false;
   }
 
@@ -522,7 +526,7 @@ function applyProfile() {
 <div class="note">Examples: EST5EDT,M3.2.0/2,M11.1.0/2 (US Eastern), CET-1CEST,M3.5.0,M10.5.0/3 (Central Europe), GMT0BST,M3.5.0/1,M10.5.0 (UK).</div>
 <label><input type="checkbox" name="ota_enabled" )rawliteral";
   html += config.otaEnabled ? "checked" : "";
-  html += R"rawliteral(> Check GitHub updates every 12 hours from VoIPshare/ESP32_ePaper_GoogleCalendar</label>
+  html += R"rawliteral(> Check GitHub updates once a day from VoIPshare/ESP32_ePaper_GoogleCalendar</label>
 <button type="submit">Save configuration</button>
 </form>
 </div>
@@ -882,7 +886,8 @@ void drawCalendar()
       display.setTextColor(GxEPD_RED);
       display.setCursor(listX, listY);
       display.print(when);
-      display.getTextBounds(when + " ", 0, 0, &tbx, &tby, &tbw, &tbh);
+      // Text bounds drop trailing spaces, so use where the cursor ended up, plus a gap.
+      int titleIndent = display.getCursorX() - listX + 12;
 
       display.setTextColor(GxEPD_BLACK);
       listY = drawWrappedText(
@@ -891,7 +896,8 @@ void drawCalendar()
         maxWidth,
         utf8ToLatin1(String(cal.events[i].title)),
         lineHeight,
-        tbw
+        titleIndent,
+        2
       );
 
       listY += lineHeight / 2;
@@ -1086,18 +1092,49 @@ void drawIcon(
 }
 
 
-// The first line starts `firstIndent` pixels to the right of x (after a label on the same line).
+uint16_t textWidth(const String &text)
+{
+  int16_t x1, y1;
+  uint16_t w, h;
+  display.getTextBounds(text, 0, 0, &x1, &y1, &w, &h);
+  return w;
+}
+
+// Shortens `text` and appends "..." so it fits in `width` pixels.
+String ellipsize(String text, int width)
+{
+  text.trim();
+  while (text.length() && textWidth(text + "...") > width) {
+    text.remove(text.length() - 1);
+    text.trim();
+  }
+  return text + "...";
+}
+
+// Word-wraps `text` over at most `maxLines` lines; the last line ends with "..." if the
+// text doesn't fit. The first line starts `firstIndent` pixels to the right of x (after a
+// label on the same line). Returns the baseline below the last line drawn.
 int drawWrappedText(
   int x,
   int y,
   int maxWidth,
   const String &text,
   int lineStep,   // baseline-to-baseline, e.g. 22
-  int firstIndent
+  int firstIndent,
+  int maxLines
 ) {
   String line = "";
   int cursorY = y;
   int indent = firstIndent;
+  int lines = 0;
+
+  auto printLine = [&](const String &s) {
+    display.setCursor(x + indent, cursorY);
+    display.print(s);
+    cursorY += lineStep;
+    indent = 0;
+    lines++;
+  };
 
   int i = 0;
   while (i < text.length()) {
@@ -1106,39 +1143,39 @@ int drawWrappedText(
     int start = i;
     while (i < text.length() && text[i] != ' ') i++;
     String word = text.substring(start, i);
+    i++; // skip space
+    if (!word.length()) continue;
 
-    // measure candidate line
-    int16_t x1, y1;
-    uint16_t w, h;
     String candidate = line.length() ? line + " " + word : word;
-    display.getTextBounds(candidate, 0, 0, &x1, &y1, &w, &h);
-
-    if (w > maxWidth - indent) {
-      if (line.length()) {
-        // print current line, move to next baseline
-        display.setCursor(x + indent, cursorY);
-        display.print(line);
-        cursorY += lineStep;
-        line = word;
-      } else if (indent > 0) {
-        // not even the first word fits after the label: start below it
-        cursorY += lineStep;
-        line = word;
-      } else {
-        line = candidate;
-      }
-      indent = 0;
-    } else {
+    if (textWidth(candidate) <= maxWidth - indent) {
       line = candidate;
+      continue;
     }
 
-    i++; // skip space
+    if (lines >= maxLines - 1) {
+      // last allowed line: cut the rest of the text here
+      printLine(ellipsize(line + " " + text.substring(start), maxWidth - indent));
+      return cursorY;
+    }
+
+    if (line.length()) {
+      printLine(line);
+      line = word;
+    } else if (indent > 0) {
+      // not even the first word fits after the label: start below it
+      cursorY += lineStep;
+      indent = 0;
+      lines++;
+      line = word;
+    } else {
+      line = candidate;   // a single word wider than the line
+    }
   }
 
   // print last line
   if (line.length()) {
-    display.setCursor(x + indent, cursorY);
-    display.print(line);
+    printLine(textWidth(line) > maxWidth - indent ? ellipsize(line, maxWidth - indent) : line);
+  } else if (lines == 0) {
     cursorY += lineStep;
   }
 

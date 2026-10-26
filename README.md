@@ -30,7 +30,7 @@ The display wakes once per refresh interval (6, 12, 18 or 24 hours), connects to
 | **Calendar iCal URLs** | Up to 3 `.ics` links, merged into one calendar. See [Getting your Google Calendar link](#getting-your-google-calendar-link). |
 | **Weather location** | A city, optionally with a 2-letter country code (`London, GB`), or `latitude,longitude` (`51.51,-0.13`). |
 | **Timezone** | A POSIX TZ string, e.g. `EST5EDT,M3.2.0/2,M11.1.0/2` (US Eastern), `CET-1CEST,M3.5.0,M10.5.0/3` (Central Europe), `GMT0BST,M3.5.0/1,M10.5.0` (UK). [List of TZ strings](https://github.com/nayarsystems/posix_tz_db/blob/master/zones.csv). |
-| **GitHub updates** | Optional: check this repository's releases for new firmware, at most every 12 hours (at a wake-up). |
+| **GitHub updates** | Optional: check this repository's releases for new firmware about once a day (at a wake-up). |
 
 At least one iCal URL and a weather location are required. Settings are stored in the board's flash (`Preferences`) and survive firmware updates. Settings saved by older firmware (city + country code) are converted automatically; the old Google Script ID is no longer used, so add an iCal link once after updating.
 
