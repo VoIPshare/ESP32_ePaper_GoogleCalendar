@@ -15,6 +15,7 @@
 #include "RobotoMono_Thin7pt7b.h"
 
 #include "Geologica_Bold14pt8b.h"
+#include "Geologica_Bold11pt8b.h"
 
 #include "icons/icon_sunny.h"
 #include "icons/icon_partlycloudy.h"
@@ -35,7 +36,7 @@ const char* OTA_REPO_BASE = "https://github.com/VoIPshare/ESP32_ePaper_GoogleCal
 const char* DEFAULT_DEVICE_TZ = "EST5EDT,M3.2.0/2,M11.1.0/2";
 
 #ifndef FW_VERSION
-#define FW_VERSION "0.2.2"
+#define FW_VERSION "0.2.3"
 #endif
 #define uS_TO_S_FACTOR 1000000ULL
 
@@ -866,9 +867,9 @@ void drawCalendar()
   int listX = CAL_X + CAL_W + 20;
   int listY = CAL_Y + 40;
   int maxWidth = SCREEN_W - listX - 15;
-  int lineHeight = 30;
+  int lineHeight = 23;
   int listBottom = SCREEN_H - 45;   // keep clear of the status line
-  display.setFont(&Geologica_Bold14pt8b);
+  display.setFont(&Geologica_Bold11pt8b);
 
   if (!calendarOk) {
     display.setTextColor(GxEPD_RED);
@@ -887,7 +888,7 @@ void drawCalendar()
       display.setCursor(listX, listY);
       display.print(when);
       // Text bounds drop trailing spaces, so use where the cursor ended up, plus a gap.
-      int titleIndent = display.getCursorX() - listX + 12;
+      int titleIndent = display.getCursorX() - listX + 9;
 
       display.setTextColor(GxEPD_BLACK);
       listY = drawWrappedText(
