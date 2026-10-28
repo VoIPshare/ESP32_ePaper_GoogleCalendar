@@ -64,6 +64,8 @@ Preferences preferences;
 
 static const char* const ICS_PREF_KEYS[ICS_MAX_FEEDS] = { "ics_url", "ics_url2", "ics_url3" };
 RTC_DATA_ATTR uint32_t lastOtaCheckEpoch = 0;
+RTC_DATA_ATTR uint32_t nextRefreshEpoch = 0;  // when the screen is due for its next refresh
+RTC_DATA_ATTR bool otaOnlyWake = false;       // this wake was scheduled at night for the update check only
 
 // ===================
 // SCREEN LAYOUT
@@ -83,17 +85,28 @@ void setup()
   Serial.begin(115200);
 
   loadConfig();
-  initDisplayHardware();
 
   if (!isConfigComplete()) {
+    initDisplayHardware();
     startConfigPortal();
     return;
   }
+
+  bool nightWake = otaOnlyWake;
+  otaOnlyWake = false;
 
   connectWiFi();
   initTime();
   if (shouldCheckForOTA()) {
     checkForOTA();
+  }
+
+  // Night wake for the update check only: leave the screen as it is, unless its
+  // refresh is due anyway.
+  if (nightWake && timeSynced && nextRefreshEpoch > (uint32_t)time(nullptr) + 10 * 60) {
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+    goToSleep();
   }
 
   // Everything is fetched in this single wake, then WiFi goes off before the
@@ -104,6 +117,7 @@ void setup()
   WiFi.disconnect(true);
   WiFi.mode(WIFI_OFF);
 
+  initDisplayHardware();
   drawUI();
 
   display.hibernate();
@@ -111,10 +125,9 @@ void setup()
   if (config.pinDisplayPower >= 0) {
   digitalWrite(config.pinDisplayPower, LOW);
   }
-  Serial.println("Going to sleep. Bye");
-  esp_sleep_enable_timer_wakeup(sleepDurationUs());
-  esp_deep_sleep_start();
 
+  nextRefreshEpoch = timeSynced ? (uint32_t)time(nullptr) + config.sleepHours * 3600UL : 0;
+  goToSleep();
 }
 
 void loop() {}
@@ -138,12 +151,7 @@ void connectWiFi()
   if   (WiFi.status() != WL_CONNECTED) 
   {
       Serial.println("WiFi failed");
-
-      // Wake up after xxx seconds
-      esp_sleep_enable_timer_wakeup(sleepDurationUs());  //30ULL * 1000000ULL);
-                                            //   esp_sleep_enable_timer_wakeup( sleep_us ); //30ULL * 1000000ULL);
-      Serial.flush();
-      esp_deep_sleep_start();
+      goToSleep();
   }
 
   Serial.println(" OK");
@@ -262,27 +270,87 @@ void initDisplayHardware()
   display.setRotation(0);
 }
 
-uint64_t sleepDurationUs()
-{
-  return (uint64_t)config.sleepHours * 3600ULL * uS_TO_S_FACTOR;
-}
-
-// Once a day. The deep sleep timer runs on an imprecise RTC clock, so a wake up to an hour
-// early still counts; otherwise a 24 h refresh interval would only check every other day.
+// The deep sleep timer runs on an imprecise RTC clock, so a wake up to an hour early
+// still counts as a day; otherwise a 24 h refresh interval would check every other day.
 #define OTA_CHECK_INTERVAL_S (23UL * 3600UL)
+// If the night window was missed (no WiFi then, for example), check at any wake.
+#define OTA_OVERDUE_S        (47UL * 3600UL)
+// Updates are checked preferably at night, between 1:00 and 4:00 local time.
+#define OTA_NIGHT_FROM_HOUR  1
+#define OTA_NIGHT_TO_HOUR    4
+#define OTA_NIGHT_WAKE_HOUR  2   // middle of the window, so timer drift keeps it inside
+
+bool otaCheckDueAt(uint32_t t)
+{
+  return lastOtaCheckEpoch == 0 || t < lastOtaCheckEpoch ||
+         (t - lastOtaCheckEpoch) >= OTA_CHECK_INTERVAL_S;
+}
 
 bool shouldCheckForOTA()
 {
   if (!config.otaEnabled) return false;
   if (!timeSynced) return false;
 
+  // First wake after power-on or flashing: check right away.
+  if (lastOtaCheckEpoch == 0) return true;
+
   uint32_t now = (uint32_t)time(nullptr);
-  if (lastOtaCheckEpoch != 0 && now >= lastOtaCheckEpoch &&
-      (now - lastOtaCheckEpoch) < OTA_CHECK_INTERVAL_S) {
-    return false;
+  if (!otaCheckDueAt(now)) return false;
+
+  time_t t = now;
+  struct tm lt;
+  localtime_r(&t, &lt);
+  if (lt.tm_hour >= OTA_NIGHT_FROM_HOUR && lt.tm_hour < OTA_NIGHT_TO_HOUR) return true;
+
+  return (now - lastOtaCheckEpoch) >= OTA_OVERDUE_S;
+}
+
+// Next OTA_NIGHT_WAKE_HOUR:00 local time, at least 10 minutes from now.
+uint32_t nextNightWakeEpoch(uint32_t now)
+{
+  time_t t = now;
+  struct tm lt;
+  localtime_r(&t, &lt);
+  lt.tm_hour = OTA_NIGHT_WAKE_HOUR;
+  lt.tm_min = 0;
+  lt.tm_sec = 0;
+  lt.tm_isdst = -1;
+  time_t night = mktime(&lt);
+  if (night <= (time_t)now + 10 * 60) {
+    lt.tm_mday += 1;
+    lt.tm_hour = OTA_NIGHT_WAKE_HOUR;
+    lt.tm_isdst = -1;
+    night = mktime(&lt);
+  }
+  return (uint32_t)night;
+}
+
+// Sleeps until the next screen refresh, or until the night update window when an update
+// check is due before that refresh. Without a correct time, sleeps the refresh interval.
+void goToSleep()
+{
+  uint64_t sleepS = (uint64_t)config.sleepHours * 3600ULL;
+  uint32_t now = (uint32_t)time(nullptr);
+
+  // The clock keeps running in deep sleep, so a pending refresh time stays valid even
+  // when NTP failed on this wake.
+  if (nextRefreshEpoch > now && now > 1700000000UL) {
+    sleepS = nextRefreshEpoch - now;
   }
 
-  return true;
+  if (config.otaEnabled && timeSynced && nextRefreshEpoch > now) {
+    uint32_t night = nextNightWakeEpoch(now);
+    if (night < nextRefreshEpoch && otaCheckDueAt(night)) {
+      sleepS = night - now;
+      otaOnlyWake = true;
+    }
+  }
+
+  if (sleepS < 60) sleepS = 60;
+  Serial.printf("Sleeping %lu min%s\n", (unsigned long)(sleepS / 60), otaOnlyWake ? " (night update check)" : "");
+  Serial.flush();
+  esp_sleep_enable_timer_wakeup(sleepS * uS_TO_S_FACTOR);
+  esp_deep_sleep_start();
 }
 
 // Release asset names: <board>-version.txt and <board>-ota.bin (see the GitHub workflow).
@@ -527,7 +595,7 @@ function applyProfile() {
 <div class="note">Examples: EST5EDT,M3.2.0/2,M11.1.0/2 (US Eastern), CET-1CEST,M3.5.0,M10.5.0/3 (Central Europe), GMT0BST,M3.5.0/1,M10.5.0 (UK).</div>
 <label><input type="checkbox" name="ota_enabled" )rawliteral";
   html += config.otaEnabled ? "checked" : "";
-  html += R"rawliteral(> Check GitHub updates once a day from VoIPshare/ESP32_ePaper_GoogleCalendar</label>
+  html += R"rawliteral(> Check GitHub updates once a day, at night (1-4 am), from VoIPshare/ESP32_ePaper_GoogleCalendar</label>
 <button type="submit">Save configuration</button>
 </form>
 </div>
