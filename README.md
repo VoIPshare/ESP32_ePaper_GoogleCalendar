@@ -11,7 +11,7 @@ The ESP32 reads your calendars (iCal `.ics` links) and the weather directly: no 
 
 ## Battery use
 
-The display wakes once per refresh interval (6, 12, 18 or 24 hours), and every night at 1 am so the screen shows the new day. On each wake it connects to Wi-Fi, downloads the calendars and the forecast, turns Wi-Fi off, redraws the screen and goes back to deep sleep. The 1 am refresh needs a clock set from the internet; until then the board just follows the refresh interval. A city name is geocoded only once and the coordinates are kept across deep sleep. If Wi-Fi is not available, the board goes straight back to sleep until the next interval.
+The display wakes once per refresh interval (6, 12, 18 or 24 hours), and every night at 00:30 so the screen shows the new day. On each wake it connects to Wi-Fi, downloads the calendars and the forecast, turns Wi-Fi off, redraws the screen and goes back to deep sleep. The 00:30 refresh needs a clock set from the internet; until then the board just follows the refresh interval. A city name is geocoded only once and the coordinates are kept across deep sleep. If Wi-Fi is not available, the board goes straight back to sleep until the next interval.
 
 ## Setup
 
@@ -25,12 +25,12 @@ The display wakes once per refresh interval (6, 12, 18 or 24 hours), and every n
 | Field | What to enter |
 | --- | --- |
 | **WiFi network / password** | Your Wi-Fi. Leave the password empty to keep the saved one. |
-| **Refresh interval** | How long the board sleeps between updates: `6`, `12`, `18` or `24` hours. The screen is also refreshed every night at 1 am. |
+| **Refresh interval** | How long the board sleeps between updates: `6`, `12`, `18` or `24` hours. The screen is also refreshed every night at 00:30. |
 | **Hardware profile** | Your board's wiring (see the table below). Pick **Custom** to enter your own pins. |
 | **Calendar iCal URLs** | Up to 3 `.ics` links, merged into one calendar. See [Getting your Google Calendar link](#getting-your-google-calendar-link). |
 | **Weather location** | A city, optionally with a 2-letter country code (`London, GB`), or `latitude,longitude` (`51.51,-0.13`). |
 | **Timezone** | A POSIX TZ string, e.g. `EST5EDT,M3.2.0/2,M11.1.0/2` (US Eastern), `CET-1CEST,M3.5.0,M10.5.0/3` (Central Europe), `GMT0BST,M3.5.0/1,M10.5.0` (UK). [List of TZ strings](https://github.com/nayarsystems/posix_tz_db/blob/master/zones.csv). |
-| **GitHub updates** | Optional: check this repository's releases for new firmware once a day, at night between 1 and 4 am (see [Update checks](#update-checks)). |
+| **GitHub updates** | Optional: check this repository's releases for new firmware once a day, at night (see [Update checks](#update-checks)). |
 
 At least one iCal URL and a weather location are required. Settings are stored in the board's flash (`Preferences`) and survive firmware updates. Settings saved by older firmware (city + country code) are converted automatically; the old Google Script ID is no longer used, so add an iCal link once after updating.
 
@@ -79,11 +79,11 @@ A device only installs a version newer than its own, and only from the latest **
 
 ### Update checks
 
-With **GitHub updates** enabled, the device checks once a day, preferably at night between 1 and 4 am local time:
+With **GitHub updates** enabled, the device checks once a day, at night:
 
 - right after power-on or flashing, it checks immediately;
-- otherwise it checks during the nightly 1 am refresh;
-- if the night check was missed (no WiFi at 1 am, for example), the next wake checks once two days have passed.
+- otherwise it checks during the nightly 00:30 refresh (00:30 is after midnight, so the screen shows the new day, and before the daylight saving changes at 2:00);
+- if the night check was missed (no WiFi at 00:30, for example), the next wake checks once two days have passed.
 
 ### Beta versions
 

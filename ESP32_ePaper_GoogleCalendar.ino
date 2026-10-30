@@ -267,12 +267,14 @@ void initDisplayHardware()
 #define OTA_CHECK_INTERVAL_S (23UL * 3600UL)
 // If the night check was missed (no WiFi then, for example), check at any wake.
 #define OTA_OVERDUE_S        (47UL * 3600UL)
-// Updates are checked preferably at night, between 1:00 and 4:00 local time.
-#define OTA_NIGHT_FROM_HOUR  1
+// Updates are checked preferably at night, between 0:00 and 4:00 local time.
+#define OTA_NIGHT_FROM_HOUR  0
 #define OTA_NIGHT_TO_HOUR    4
 // Every day the screen is also refreshed at this hour, so it shows the new day;
 // that wake does the update check too.
-#define NIGHT_REFRESH_HOUR   1
+// 00:30 is after midnight but before the daylight saving changes (2:00 or later).
+#define NIGHT_REFRESH_HOUR   0
+#define NIGHT_REFRESH_MINUTE 30
 
 bool otaCheckDueAt(uint32_t t)
 {
@@ -300,29 +302,30 @@ bool shouldCheckForOTA()
   return (now - lastOtaCheckEpoch) >= OTA_OVERDUE_S;
 }
 
-// Next NIGHT_REFRESH_HOUR:00 local time at least 15 minutes from now. A wake that came
-// a few minutes early (timer drift) doesn't refresh twice, while one well before 1:00
-// (before midnight, or after a daylight saving change) still gets the 1:00 refresh.
+// Next NIGHT_REFRESH_HOUR:NIGHT_REFRESH_MINUTE local time at least 15 minutes from now.
+// A wake that came a few minutes early (timer drift) doesn't refresh twice, while one
+// well before 00:30 (before midnight, for example) still gets the 00:30 refresh.
 uint32_t nextNightRefreshEpoch(uint32_t now)
 {
   time_t t = now;
   struct tm lt;
   localtime_r(&t, &lt);
   lt.tm_hour = NIGHT_REFRESH_HOUR;
-  lt.tm_min = 0;
+  lt.tm_min = NIGHT_REFRESH_MINUTE;
   lt.tm_sec = 0;
   lt.tm_isdst = -1;
   time_t night = mktime(&lt);
   if (night < (time_t)now + 15 * 60) {
     lt.tm_mday += 1;
     lt.tm_hour = NIGHT_REFRESH_HOUR;
+    lt.tm_min = NIGHT_REFRESH_MINUTE;
     lt.tm_isdst = -1;
     night = mktime(&lt);
   }
   return (uint32_t)night;
 }
 
-// Sleeps for the refresh interval, or less to wake at 1:00 for the daily night refresh.
+// Sleeps for the refresh interval, or less to wake at 00:30 for the daily night refresh.
 // The night refresh needs a correct clock: set over NTP on this wake or an earlier one.
 void goToSleep()
 {
@@ -331,7 +334,9 @@ void goToSleep()
 
   if (timeSynced || (clockWasSet && now > 1700000000UL)) {
     uint32_t night = nextNightRefreshEpoch(now);
-    if (night - now <= sleepS) {
+    // Up to an hour longer than the interval is fine to land on 00:30: the day after a
+    // daylight saving change is 25 hours long.
+    if (night - now <= sleepS + 3600) {
       sleepS = night - now;
       nightRefreshWake = true;
     }
@@ -531,7 +536,7 @@ function applyProfile() {
   html += buildSleepOptions();
   html += R"rawliteral(
 </select>
-<div class="note">The screen is also refreshed every night at 1 am, so it shows the new day.</div>
+<div class="note">The screen is also refreshed every night at 00:30, so it shows the new day.</div>
 <label for="board_profile">Hardware profile</label>
 <select id="board_profile" name="board_profile" onchange="applyProfile()">
 )rawliteral";
@@ -587,7 +592,7 @@ function applyProfile() {
 <div class="note">Examples: EST5EDT,M3.2.0/2,M11.1.0/2 (US Eastern), CET-1CEST,M3.5.0,M10.5.0/3 (Central Europe), GMT0BST,M3.5.0/1,M10.5.0 (UK).</div>
 <label><input type="checkbox" name="ota_enabled" )rawliteral";
   html += config.otaEnabled ? "checked" : "";
-  html += R"rawliteral(> Check GitHub updates once a day, at night (1-4 am), from VoIPshare/ESP32_ePaper_GoogleCalendar</label>
+  html += R"rawliteral(> Check GitHub updates once a day, at night (00:30), from VoIPshare/ESP32_ePaper_GoogleCalendar</label>
 <button type="submit">Save configuration</button>
 </form>
 </div>
