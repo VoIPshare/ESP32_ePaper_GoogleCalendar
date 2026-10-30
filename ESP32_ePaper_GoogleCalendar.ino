@@ -64,8 +64,9 @@ Preferences preferences;
 
 static const char* const ICS_PREF_KEYS[ICS_MAX_FEEDS] = { "ics_url", "ics_url2", "ics_url3" };
 RTC_DATA_ATTR uint32_t lastOtaCheckEpoch = 0;
-RTC_DATA_ATTR uint32_t nextRefreshEpoch = 0;  // when the screen is due for its next refresh
-RTC_DATA_ATTR bool otaOnlyWake = false;       // this wake was scheduled at night for the update check only
+RTC_DATA_ATTR bool clockWasSet = false;      // NTP succeeded on an earlier wake (the clock runs in deep sleep)
+RTC_DATA_ATTR bool nightRefreshWake = false; // the next wake is the daily night refresh
+bool isNightRefresh = false;                  // this wake is the daily night refresh
 
 // ===================
 // SCREEN LAYOUT
@@ -92,21 +93,13 @@ void setup()
     return;
   }
 
-  bool nightWake = otaOnlyWake;
-  otaOnlyWake = false;
+  isNightRefresh = nightRefreshWake;
+  nightRefreshWake = false;
 
   connectWiFi();
   initTime();
   if (shouldCheckForOTA()) {
     checkForOTA();
-  }
-
-  // Night wake for the update check only: leave the screen as it is, unless its
-  // refresh is due anyway.
-  if (nightWake && timeSynced && nextRefreshEpoch > (uint32_t)time(nullptr) + 10 * 60) {
-    WiFi.disconnect(true);
-    WiFi.mode(WIFI_OFF);
-    goToSleep();
   }
 
   // Everything is fetched in this single wake, then WiFi goes off before the
@@ -126,7 +119,6 @@ void setup()
   digitalWrite(config.pinDisplayPower, LOW);
   }
 
-  nextRefreshEpoch = timeSynced ? (uint32_t)time(nullptr) + config.sleepHours * 3600UL : 0;
   goToSleep();
 }
 
@@ -271,14 +263,16 @@ void initDisplayHardware()
 }
 
 // The deep sleep timer runs on an imprecise RTC clock, so a wake up to an hour early
-// still counts as a day; otherwise a 24 h refresh interval would check every other day.
+// still counts as a day; otherwise the daily check could slip to every other day.
 #define OTA_CHECK_INTERVAL_S (23UL * 3600UL)
-// If the night window was missed (no WiFi then, for example), check at any wake.
+// If the night check was missed (no WiFi then, for example), check at any wake.
 #define OTA_OVERDUE_S        (47UL * 3600UL)
 // Updates are checked preferably at night, between 1:00 and 4:00 local time.
 #define OTA_NIGHT_FROM_HOUR  1
 #define OTA_NIGHT_TO_HOUR    4
-#define OTA_NIGHT_WAKE_HOUR  2   // middle of the window, so timer drift keeps it inside
+// Every day the screen is also refreshed at this hour, so it shows the new day;
+// that wake does the update check too.
+#define NIGHT_REFRESH_HOUR   1
 
 bool otaCheckDueAt(uint32_t t)
 {
@@ -296,6 +290,7 @@ bool shouldCheckForOTA()
 
   uint32_t now = (uint32_t)time(nullptr);
   if (!otaCheckDueAt(now)) return false;
+  if (isNightRefresh) return true;
 
   time_t t = now;
   struct tm lt;
@@ -305,49 +300,45 @@ bool shouldCheckForOTA()
   return (now - lastOtaCheckEpoch) >= OTA_OVERDUE_S;
 }
 
-// Next OTA_NIGHT_WAKE_HOUR:00 local time, at least 10 minutes from now.
-uint32_t nextNightWakeEpoch(uint32_t now)
+// Next NIGHT_REFRESH_HOUR:00 local time at least 15 minutes from now. A wake that came
+// a few minutes early (timer drift) doesn't refresh twice, while one well before 1:00
+// (before midnight, or after a daylight saving change) still gets the 1:00 refresh.
+uint32_t nextNightRefreshEpoch(uint32_t now)
 {
   time_t t = now;
   struct tm lt;
   localtime_r(&t, &lt);
-  lt.tm_hour = OTA_NIGHT_WAKE_HOUR;
+  lt.tm_hour = NIGHT_REFRESH_HOUR;
   lt.tm_min = 0;
   lt.tm_sec = 0;
   lt.tm_isdst = -1;
   time_t night = mktime(&lt);
-  if (night <= (time_t)now + 10 * 60) {
+  if (night < (time_t)now + 15 * 60) {
     lt.tm_mday += 1;
-    lt.tm_hour = OTA_NIGHT_WAKE_HOUR;
+    lt.tm_hour = NIGHT_REFRESH_HOUR;
     lt.tm_isdst = -1;
     night = mktime(&lt);
   }
   return (uint32_t)night;
 }
 
-// Sleeps until the next screen refresh, or until the night update window when an update
-// check is due before that refresh. Without a correct time, sleeps the refresh interval.
+// Sleeps for the refresh interval, or less to wake at 1:00 for the daily night refresh.
+// The night refresh needs a correct clock: set over NTP on this wake or an earlier one.
 void goToSleep()
 {
   uint64_t sleepS = (uint64_t)config.sleepHours * 3600ULL;
   uint32_t now = (uint32_t)time(nullptr);
 
-  // The clock keeps running in deep sleep, so a pending refresh time stays valid even
-  // when NTP failed on this wake.
-  if (nextRefreshEpoch > now && now > 1700000000UL) {
-    sleepS = nextRefreshEpoch - now;
-  }
-
-  if (config.otaEnabled && timeSynced && nextRefreshEpoch > now) {
-    uint32_t night = nextNightWakeEpoch(now);
-    if (night < nextRefreshEpoch && otaCheckDueAt(night)) {
+  if (timeSynced || (clockWasSet && now > 1700000000UL)) {
+    uint32_t night = nextNightRefreshEpoch(now);
+    if (night - now <= sleepS) {
       sleepS = night - now;
-      otaOnlyWake = true;
+      nightRefreshWake = true;
     }
   }
 
   if (sleepS < 60) sleepS = 60;
-  Serial.printf("Sleeping %lu min%s\n", (unsigned long)(sleepS / 60), otaOnlyWake ? " (night update check)" : "");
+  Serial.printf("Sleeping %lu min%s\n", (unsigned long)(sleepS / 60), nightRefreshWake ? " (night refresh)" : "");
   Serial.flush();
   esp_sleep_enable_timer_wakeup(sleepS * uS_TO_S_FACTOR);
   esp_deep_sleep_start();
@@ -540,6 +531,7 @@ function applyProfile() {
   html += buildSleepOptions();
   html += R"rawliteral(
 </select>
+<div class="note">The screen is also refreshed every night at 1 am, so it shows the new day.</div>
 <label for="board_profile">Hardware profile</label>
 <select id="board_profile" name="board_profile" onchange="applyProfile()">
 )rawliteral";
@@ -746,6 +738,7 @@ void initTime()
 
   struct tm timeinfo;
   timeSynced = getLocalTime(&timeinfo, 10000);
+  if (timeSynced) clockWasSet = true;
   Serial.println(timeSynced ? "Time synced" : "Time sync failed");
 }
 

@@ -11,7 +11,7 @@ The ESP32 reads your calendars (iCal `.ics` links) and the weather directly: no 
 
 ## Battery use
 
-The display wakes once per refresh interval (6, 12, 18 or 24 hours), connects to Wi-Fi, downloads the calendars and the forecast, turns Wi-Fi off, redraws the screen and goes back to deep sleep. A city name is geocoded only once and the coordinates are kept across deep sleep. If Wi-Fi is not available, the board goes straight back to sleep until the next interval.
+The display wakes once per refresh interval (6, 12, 18 or 24 hours), and every night at 1 am so the screen shows the new day. On each wake it connects to Wi-Fi, downloads the calendars and the forecast, turns Wi-Fi off, redraws the screen and goes back to deep sleep. The 1 am refresh needs a clock set from the internet; until then the board just follows the refresh interval. A city name is geocoded only once and the coordinates are kept across deep sleep. If Wi-Fi is not available, the board goes straight back to sleep until the next interval.
 
 ## Setup
 
@@ -25,7 +25,7 @@ The display wakes once per refresh interval (6, 12, 18 or 24 hours), connects to
 | Field | What to enter |
 | --- | --- |
 | **WiFi network / password** | Your Wi-Fi. Leave the password empty to keep the saved one. |
-| **Refresh interval** | How long the board sleeps between updates: `6`, `12`, `18` or `24` hours. |
+| **Refresh interval** | How long the board sleeps between updates: `6`, `12`, `18` or `24` hours. The screen is also refreshed every night at 1 am. |
 | **Hardware profile** | Your board's wiring (see the table below). Pick **Custom** to enter your own pins. |
 | **Calendar iCal URLs** | Up to 3 `.ics` links, merged into one calendar. See [Getting your Google Calendar link](#getting-your-google-calendar-link). |
 | **Weather location** | A city, optionally with a 2-letter country code (`London, GB`), or `latitude,longitude` (`51.51,-0.13`). |
@@ -82,9 +82,8 @@ A device only installs a version newer than its own, and only from the latest **
 With **GitHub updates** enabled, the device checks once a day, preferably at night between 1 and 4 am local time:
 
 - right after power-on or flashing, it checks immediately;
-- when a check is due before the next screen refresh, the device wakes at 2 am just for the check (WiFi only, the screen is not redrawn) and then sleeps until the refresh;
-- the night wake is only scheduled when the clock was set from the internet on that wake;
-- if the night check was missed (no WiFi at 2 am, for example), the next wake checks once two days have passed.
+- otherwise it checks during the nightly 1 am refresh;
+- if the night check was missed (no WiFi at 1 am, for example), the next wake checks once two days have passed.
 
 ### Beta versions
 

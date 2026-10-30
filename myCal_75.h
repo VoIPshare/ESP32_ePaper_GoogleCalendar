@@ -41,7 +41,7 @@ bool isKnownBoardProfile(const String&);
 void initDisplayHardware();
 void goToSleep();
 bool otaCheckDueAt(uint32_t);
-uint32_t nextNightWakeEpoch(uint32_t);
+uint32_t nextNightRefreshEpoch(uint32_t);
 bool shouldCheckForOTA();
 String defaultOtaVersionUrl();
 String defaultOtaFirmwareUrl();
